@@ -625,7 +625,7 @@ Caused by:
 }
 
 #[cargo_test]
-fn inherited_dependencies_union_features() {
+fn inherited_dependencies_override_features() {
     Package::new("dep", "0.1.0")
         .feature("fancy", &["fancy_dep"])
         .feature("dancy", &["dancy_dep"])
@@ -662,12 +662,10 @@ fn inherited_dependencies_union_features() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 2 packages to latest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] dancy_dep v0.6.8 (registry `dummy-registry`)
-[CHECKING] fancy_dep v0.2.4
 [CHECKING] dancy_dep v0.6.8
 [CHECKING] dep v0.1.0
 [CHECKING] bar v0.2.0 ([ROOT]/foo)
@@ -680,7 +678,7 @@ fn inherited_dependencies_union_features() {
 
     let lockfile = p.read_lockfile();
     assert!(lockfile.contains("dep"));
-    assert!(lockfile.contains("fancy_dep"));
+    assert!(!lockfile.contains("fancy_dep"));
     assert!(lockfile.contains("dancy_dep"));
 }
 
@@ -1508,54 +1506,7 @@ Caused by:
 }
 
 #[cargo_test]
-fn warn_inherit_def_feat_true_member_def_feat_false() {
-    Package::new("dep", "0.1.0")
-        .feature("default", &["fancy_dep"])
-        .add_dep(Dependency::new("fancy_dep", "0.2").optional(true))
-        .file("src/lib.rs", "")
-        .publish();
-
-    Package::new("fancy_dep", "0.2.4").publish();
-
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [package]
-            name = "bar"
-            version = "0.2.0"
-            edition = "2015"
-            authors = []
-            [dependencies]
-            dep = { workspace = true, default-features = false }
-
-            [workspace]
-            members = []
-            [workspace.dependencies]
-            dep = { version = "0.1.0", default-features = true }
-        "#,
-        )
-        .file("src/main.rs", "fn main() {}")
-        .build();
-
-    p.cargo("check").with_stderr_data(str![[r#"
-[WARNING] Cargo.toml: `default-features` is ignored for dep, since `default-features` was true for `workspace.dependencies.dep`, this could become a hard error in the future
-[WARNING] `bar` (manifest) generated 1 warning
-[UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
-[DOWNLOADING] crates ...
-[DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
-[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
-[CHECKING] fancy_dep v0.2.4
-[CHECKING] dep v0.1.0
-[CHECKING] bar v0.2.0 ([ROOT]/foo)
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-
-"#]].unordered()).run();
-}
-
-#[cargo_test]
-fn warn_inherit_def_feat_true_member_def_feat_false_2024_edition() {
+fn inherit_def_feat_true_member_def_feat_false() {
     Package::new("dep", "0.1.0")
         .feature("default", &["fancy_dep"])
         .add_dep(Dependency::new("fancy_dep", "0.2").optional(true))
@@ -1585,23 +1536,23 @@ fn warn_inherit_def_feat_true_member_def_feat_false_2024_edition() {
         .file("src/main.rs", "fn main() {}")
         .build();
 
-    p.cargo("check")
-        .with_status(101)
-        .with_stderr_data(str![[r#"
-[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
-
-Caused by:
-  error inheriting `dep` from workspace root manifest's `workspace.dependencies.dep`
-
-Caused by:
-  `default-features = false` cannot override workspace's `default-features`
+    p.cargo("check").with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest Rust [..] compatible version
+[DOWNLOADING] crates ...
+[DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
+[CHECKING] dep v0.1.0
+[CHECKING] bar v0.2.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
         .run();
+
+    assert!(!p.read_lockfile().contains("fancy_dep"));
 }
 
 #[cargo_test]
-fn warn_inherit_simple_member_def_feat_false() {
+fn inherit_simple_member_def_feat_false() {
     Package::new("dep", "0.1.0")
         .feature("default", &["fancy_dep"])
         .add_dep(Dependency::new("fancy_dep", "0.2").optional(true))
@@ -1632,65 +1583,17 @@ fn warn_inherit_simple_member_def_feat_false() {
         .build();
 
     p.cargo("check").with_stderr_data(str![[r#"
-[WARNING] Cargo.toml: `default-features` is ignored for dep, since `default-features` was not specified for `workspace.dependencies.dep`, this could become a hard error in the future
-[WARNING] `bar` (manifest) generated 1 warning
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
-[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
-[CHECKING] fancy_dep v0.2.4
 [CHECKING] dep v0.1.0
 [CHECKING] bar v0.2.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]].unordered()).run();
-}
 
-#[cargo_test]
-fn warn_inherit_simple_member_def_feat_false_2024_edition() {
-    Package::new("dep", "0.1.0")
-        .feature("default", &["fancy_dep"])
-        .add_dep(Dependency::new("fancy_dep", "0.2").optional(true))
-        .file("src/lib.rs", "")
-        .publish();
-
-    Package::new("fancy_dep", "0.2.4").publish();
-
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [package]
-            name = "bar"
-            version = "0.2.0"
-            edition = "2024"
-            authors = []
-            [dependencies]
-            dep = { workspace = true, default-features = false }
-
-            [workspace]
-            members = []
-            [workspace.dependencies]
-            dep = "0.1.0"
-        "#,
-        )
-        .file("src/main.rs", "fn main() {}")
-        .build();
-
-    p.cargo("check")
-        .with_status(101)
-        .with_stderr_data(str![[r#"
-[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
-
-Caused by:
-  error inheriting `dep` from workspace root manifest's `workspace.dependencies.dep`
-
-Caused by:
-  `default-features = false` cannot override workspace's `default-features`
-
-"#]])
-        .run();
+    assert!(!p.read_lockfile().contains("fancy_dep"));
 }
 
 #[cargo_test]

@@ -424,7 +424,7 @@ fn open_membership_attaches_the_invoked_child() {
                 edition = "2024"
 
                 [workspace.dependencies]
-                shared = { path = "shared" }
+                shared = { path = "shared", features = ["workspace"] }
             "#,
         )
         .file("listed/Cargo.toml", &basic_manifest("listed", "0.1.0"))
@@ -438,12 +438,33 @@ fn open_membership_attaches_the_invoked_child() {
                 edition.workspace = true
 
                 [dependencies]
-                shared.workspace = true
+                shared = { workspace = true, default-features = false, features = ["child"] }
             "#,
         )
         .file("dynamic/src/lib.rs", "pub fn dynamic() { shared::shared(); }")
-        .file("shared/Cargo.toml", &basic_manifest("shared", "0.1.0"))
-        .file("shared/src/lib.rs", "pub fn shared() {}")
+        .file(
+            "shared/Cargo.toml",
+            r#"
+                [package]
+                name = "shared"
+                version = "0.1.0"
+                edition = "2024"
+
+                [features]
+                default = []
+                workspace = []
+                child = []
+            "#,
+        )
+        .file(
+            "shared/src/lib.rs",
+            r#"
+                #[cfg(any(feature = "default", feature = "workspace"))]
+                compile_error!("the child dependency feature override was ignored");
+
+                pub fn shared() {}
+            "#,
+        )
         .build();
 
     p.cargo("check --workspace")

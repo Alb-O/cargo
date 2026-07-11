@@ -215,7 +215,8 @@ inherited by members of a workspace.
 
 Specifying a workspace dependency is similar to [package dependencies][specifying-dependencies] except:
 - Dependencies from this table cannot be declared as `optional`
-- [`features`][features] declared in this table are additive with the `features` from `[dependencies]`
+
+Members inherit the workspace dependency's `features` and `default-features` when those fields are omitted. A member that supplies either field replaces the corresponding workspace value for that dependency declaration. Normal [feature unification][features] can still enable features requested elsewhere in the dependency graph.
 
 You can then [inherit the workspace dependency as a package dependency][inheriting-a-dependency-from-a-workspace]
 
@@ -238,7 +239,7 @@ name = "bar"
 version = "0.2.0"
 
 [dependencies]
-regex = { workspace = true, features = ["unicode"] }
+regex = { workspace = true, default-features = false, features = ["unicode"] }
 
 [build-dependencies]
 cc.workspace = true

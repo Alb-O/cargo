@@ -637,11 +637,13 @@ dependency in the workspace's [`[workspace.dependencies]`][workspace.dependencie
 After that, add it to the `[dependencies]` table with `workspace = true`.
 
 Along with the `workspace` key, dependencies can also include these keys:
-- [`optional`][optional]: Note that the`[workspace.dependencies]` table is not allowed to specify `optional`.
-- [`features`][features]: These are additive with the features declared in the `[workspace.dependencies]`
+- [`optional`][optional]: the `[workspace.dependencies]` table cannot specify `optional`
+- [`features`][features]: replaces the inherited feature list when specified
+- `default-features`: replaces the inherited default-feature setting when specified
 
-Other than `optional` and `features`, inherited dependencies cannot use any other
-dependency key (such as `version` or `default-features`).
+Other dependency keys, such as `version` or `path`, remain owned by the workspace declaration.
+
+When `features` or `default-features` is omitted, the value from `[workspace.dependencies]` is inherited. Normal [feature unification][features] can still enable features requested by another dependency declaration.
 
 Dependencies in the `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, and
 `[target."...".dependencies]` sections support the ability to reference the
@@ -653,7 +655,7 @@ name = "bar"
 version = "0.2.0"
 
 [dependencies]
-regex = { workspace = true, features = ["unicode"] }
+regex = { workspace = true, default-features = false, features = ["unicode"] }
 
 [build-dependencies]
 cc.workspace = true
