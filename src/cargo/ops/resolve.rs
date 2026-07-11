@@ -933,7 +933,20 @@ fn emit_warnings_of_unused_patches(
     }
 
     let mut unemitted_unused_patches = Vec::new();
+    let family_scope_packages = ws
+        .gctx()
+        .get::<Option<std::collections::BTreeMap<
+            String,
+            crate::util::context::CargoArtifactFamilyConfig,
+        >>>("artifact-family")?
+        .into_iter()
+        .flatten()
+        .map(|(_, family)| family.scope_package)
+        .collect::<HashSet<_>>();
     for unused in resolve.unused_patches().iter() {
+        if family_scope_packages.contains(unused.name().as_str()) {
+            continue;
+        }
         // Show alternative source URLs if the source URLs being patched
         // cannot be found in the crate graph.
         match (
