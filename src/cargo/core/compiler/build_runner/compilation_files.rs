@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::debug;
 
 use super::{BuildContext, BuildRunner, CompileKind, FileFlavor, Layout};
-use crate::core::compiler::build_env_variants::{BuildEnvVariant, FINGERPRINT_ENV_VARS};
+use crate::core::compiler::build_env_variants::BuildEnvVariant;
 use crate::core::compiler::{CompileMode, CompileTarget, CrateType, FileType, Unit};
 use crate::core::{Target, TargetKind, Workspace};
 use crate::util::{self, CargoResult, OnceExt, StableHasher};
@@ -932,7 +932,6 @@ fn compute_metadata(
             unit.pkg.name().as_str(),
             stable_unit_id,
             env_config,
-            bcx.gctx.get_env_os(FINGERPRINT_ENV_VARS),
         )?;
         build_env_affected |= variant.is_branched();
         variant.hash(&mut unit_id_hasher);

@@ -19,13 +19,6 @@ use super::UnitHash;
 #[cfg(test)]
 mod tests;
 
-/// Environment variable containing a whitespace-separated first-run seed.
-///
-/// Build scripts declare their environment dependencies only after executing.
-/// A caller that already knows the meaningful environment boundary can seed
-/// the first branch so distinct first builds do not overwrite one another.
-pub const FINGERPRINT_ENV_VARS: &str = "CARGO_BUILD_ENV_FINGERPRINT_VARS";
-
 #[derive(Clone, Debug)]
 pub struct BuildEnvVariant {
     key: u64,
@@ -43,14 +36,12 @@ impl BuildEnvVariant {
         package_name: &str,
         stable_unit_id: UnitHash,
         env_config: &Arc<HashMap<String, OsString>>,
-        seed: Option<&OsStr>,
     ) -> CargoResult<Self> {
         let registry_dir = build_root
             .join(".build-env-variants")
             .join(package_name)
             .join(stable_unit_id.to_string());
         let records = load_records(&registry_dir)?;
-        let seed_names = seed_names(seed).collect::<Vec<_>>();
 
         if let Some(key) = records.iter().find_map(|(key, record)| {
             (record.variables == variable_values(record.variables.iter().map(|(name, _)| name), env_config))
@@ -65,7 +56,6 @@ impl BuildEnvVariant {
         let mut names = records
             .iter()
             .flat_map(|(_, record)| record.variables.iter().map(|(name, _)| name.clone()))
-            .chain(seed_names)
             .collect::<Vec<_>>();
         names.sort();
         names.dedup();
@@ -144,15 +134,6 @@ fn load_records(registry_dir: &Path) -> CargoResult<Vec<(u64, VariantRecord)>> {
             Ok((key, record))
         })
         .collect()
-}
-
-fn seed_names(seed: Option<&OsStr>) -> impl Iterator<Item = String> {
-    seed.and_then(OsStr::to_str)
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>()
-        .into_iter()
 }
 
 fn variable_values<'a>(
