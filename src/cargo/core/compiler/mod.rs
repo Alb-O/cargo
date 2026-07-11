@@ -509,7 +509,7 @@ fn rustc(
                 ))
             })?;
             if let Some(variant) = &input_variant {
-                variant.record_names(&observed_env, &env_config)?;
+                variant.record_names(&observed_env)?;
             }
             // This mtime shift allows Cargo to detect if a source file was
             // modified in the middle of the build.
@@ -1138,7 +1138,7 @@ fn rustdoc(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<W
                 ))
             })?;
             if let Some(variant) = &input_variant {
-                variant.record_names(&observed_env, &env_config)?;
+                variant.record_names(&observed_env)?;
             }
             // This mtime shift allows Cargo to detect if a source file was
             // modified in the middle of the build.
