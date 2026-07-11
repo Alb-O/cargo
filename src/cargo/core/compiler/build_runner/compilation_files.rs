@@ -941,12 +941,17 @@ fn compute_metadata(
     } else {
         InputSource::RustcEnv
     };
+    let (variant_env, inherit_process_env) = match bcx.artifact_family(unit) {
+        Some(family) => crate::core::artifact_family::input_environment(family, env_config)?,
+        None => (Arc::clone(env_config), true),
+    };
     let variant = InputVariant::select(
         build_root,
         unit.pkg.name().as_str(),
         stable_unit_id,
         source,
-        env_config,
+        &variant_env,
+        inherit_process_env,
     )?;
     input_variant_affected |= variant.is_branched();
     variant.hash(&mut unit_id_hasher);

@@ -47,6 +47,8 @@ pub struct InputVariant {
     stable_unit_id: UnitHash,
     schema_path: PathBuf,
     records_dir: PathBuf,
+    env_config: Arc<HashMap<String, OsString>>,
+    inherit_process_env: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -83,6 +85,7 @@ impl InputVariant {
         stable_unit_id: UnitHash,
         source: InputSource,
         env_config: &Arc<HashMap<String, OsString>>,
+        inherit_process_env: bool,
     ) -> CargoResult<Self> {
         let registry_root = build_root.join(".input-variants").join("v1");
         let relative = Path::new(source.directory())
@@ -97,7 +100,12 @@ impl InputVariant {
         let records = load_records(&records_dir, schema.as_ref().map(|schema| schema.generation))?;
 
         if let Some(mut record) = records.into_iter().find(|record| {
-            record.values == variable_values(record.values.iter().map(|(name, _)| name), env_config)
+            record.values
+                == variable_values(
+                    record.values.iter().map(|(name, _)| name),
+                    env_config,
+                    inherit_process_env,
+                )
         }) {
             record.last_used = now();
             write_record(&records_dir, &record)?;
@@ -107,6 +115,8 @@ impl InputVariant {
                 stable_unit_id,
                 schema_path,
                 records_dir,
+                env_config: Arc::clone(env_config),
+                inherit_process_env,
             });
         }
 
@@ -114,7 +124,7 @@ impl InputVariant {
         let key = if names.is_empty() {
             0
         } else {
-            variant_key(&variable_values(names.iter(), env_config))
+            variant_key(&variable_values(names.iter(), env_config, inherit_process_env))
         };
 
         Ok(Self {
@@ -123,6 +133,8 @@ impl InputVariant {
             stable_unit_id,
             schema_path,
             records_dir,
+            env_config: Arc::clone(env_config),
+            inherit_process_env,
         })
     }
 
@@ -140,7 +152,6 @@ impl InputVariant {
     pub fn record_names(
         &self,
         names: &[String],
-        env_config: &Arc<HashMap<String, OsString>>,
     ) -> CargoResult<()> {
         let mut names = names.to_vec();
         names.sort();
@@ -192,7 +203,11 @@ impl InputVariant {
             version: FORMAT_VERSION,
             generation,
             key: self.key,
-            values: variable_values(schema.names.iter(), env_config),
+            values: variable_values(
+                schema.names.iter(),
+                &self.env_config,
+                self.inherit_process_env,
+            ),
             created: timestamp,
             last_used: timestamp,
         };
@@ -289,19 +304,29 @@ fn remove_dir_if_exists(path: &Path) -> CargoResult<()> {
 fn variable_values<'a>(
     names: impl IntoIterator<Item = &'a String>,
     env_config: &Arc<HashMap<String, OsString>>,
+    inherit_process_env: bool,
 ) -> Vec<(String, EncodedValue)> {
     names
         .into_iter()
-        .map(|name| (name.clone(), encode_value(variable_value(name, env_config))))
+        .map(|name| {
+            (
+                name.clone(),
+                encode_value(variable_value(name, env_config, inherit_process_env)),
+            )
+        })
         .collect()
 }
 
 #[allow(clippy::disallowed_methods)]
-fn variable_value(name: &str, env_config: &Arc<HashMap<String, OsString>>) -> Option<OsString> {
+fn variable_value(
+    name: &str,
+    env_config: &Arc<HashMap<String, OsString>>,
+    inherit_process_env: bool,
+) -> Option<OsString> {
     env_config
         .get(name)
         .cloned()
-        .or_else(|| env::var_os(name))
+        .or_else(|| inherit_process_env.then(|| env::var_os(name)).flatten())
 }
 
 fn encode_value(value: Option<OsString>) -> EncodedValue {

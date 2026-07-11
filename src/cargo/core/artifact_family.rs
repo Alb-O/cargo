@@ -1,9 +1,11 @@
 //! Declarative policy for shared heavy dependency subgraphs.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
 use serde::Deserialize;
@@ -250,6 +252,38 @@ pub fn apply_environment(family: &ArtifactFamily, command: &mut ProcessBuilder) 
         command.env(name, value);
     }
     Ok(())
+}
+
+pub fn input_environment(
+    family: &ArtifactFamily,
+    configured: &Arc<HashMap<String, OsString>>,
+) -> CargoResult<(Arc<HashMap<String, OsString>>, bool)> {
+    let mut values = if family.environment.clear_inherited {
+        HashMap::default()
+    } else {
+        configured.as_ref().clone()
+    };
+    if family.environment.clear_inherited {
+        for name in ["HOME", "SCCACHE_DIR", "TERM", "TMPDIR"] {
+            if let Some(value) = std::env::var_os(name) {
+                values.insert(name.to_owned(), value);
+            }
+        }
+    }
+    if !family.environment.path.is_empty() {
+        values.insert(
+            "PATH".to_owned(),
+            std::env::join_paths(&family.environment.path)?,
+        );
+    }
+    values.extend(
+        family
+            .environment
+            .set
+            .iter()
+            .map(|(name, value)| (name.clone(), OsString::from(value))),
+    );
+    Ok((Arc::new(values), !family.environment.clear_inherited))
 }
 
 pub fn load_resolver_baselines(

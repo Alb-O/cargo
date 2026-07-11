@@ -585,7 +585,6 @@ pub fn prepare_target(
         let build_script_outputs = Arc::clone(&build_runner.build_script_outputs);
         let metadata = build_runner.get_run_build_script_metadata(unit);
         let input_variant = build_runner.files().input_variant(unit).cloned();
-        let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
         let (gen_local, _overridden) = build_script_local_fingerprints(build_runner, unit)?;
         let output_path = build_runner.build_explicit_deps[unit]
             .build_script_output
@@ -606,7 +605,7 @@ pub fn prepare_target(
             }
 
             if let Some(variant) = input_variant {
-                variant.record_names(&output.rerun_if_env_changed, &env_config)?;
+                variant.record_names(&output.rerun_if_env_changed)?;
             }
 
             write_fingerprint(&loc, &fingerprint)?;
@@ -960,13 +959,16 @@ impl LocalFingerprint {
     fn from_env<K: AsRef<str>>(
         key: K,
         env_config: &Arc<HashMap<String, OsString>>,
+        inherit_process_env: bool,
     ) -> LocalFingerprint {
         let key = key.as_ref();
         let var = key.to_owned();
         let val = if let Some(val) = env_config.get(key) {
             val.to_str().map(ToOwned::to_owned)
-        } else {
+        } else if inherit_process_env {
             env::var(key).ok()
+        } else {
+            None
         };
         LocalFingerprint::RerunIfEnvChanged { var, val }
     }
@@ -990,6 +992,8 @@ impl LocalFingerprint {
         build_root: &Path,
         cargo_exe: &Path,
         gctx: &GlobalContext,
+        env_config: &Arc<HashMap<String, OsString>>,
+        inherit_process_env: bool,
     ) -> CargoResult<Option<StaleItem>> {
         let pkg_root = pkg.root();
         match self {
@@ -1019,10 +1023,12 @@ impl LocalFingerprint {
                             )
                         })?)
                     } else {
-                        if let Some(value) = gctx.env_config()?.get(key) {
+                        if let Some(value) = env_config.get(key) {
                             value.to_str()
-                        } else {
+                        } else if inherit_process_env {
                             gctx.get_env(key).ok()
+                        } else {
+                            None
                         }
                     };
                     if current == previous.as_deref() {
@@ -1302,6 +1308,8 @@ impl Fingerprint {
         build_root: &Path,
         cargo_exe: &Path,
         gctx: &GlobalContext,
+        env_config: &Arc<HashMap<String, OsString>>,
+        inherit_process_env: bool,
     ) -> CargoResult<()> {
         assert!(!self.fs_status.up_to_date());
 
@@ -1411,6 +1419,8 @@ impl Fingerprint {
                 build_root,
                 cargo_exe,
                 gctx,
+                env_config,
+                inherit_process_env,
             )? {
                 item.log();
                 self.fs_status = FsStatus::StaleItem(item);
@@ -1598,6 +1608,11 @@ fn calculate(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult
     // `fs_status` field of it.
     let build_root = build_root(build_runner);
     let cargo_exe = build_runner.bcx.gctx.cargo_exe()?;
+    let configured_env = build_runner.bcx.gctx.env_config()?;
+    let (fingerprint_env, inherit_process_env) = match build_runner.bcx.artifact_family(unit) {
+        Some(family) => crate::core::artifact_family::input_environment(family, configured_env)?,
+        None => (Arc::clone(configured_env), true),
+    };
     fingerprint.check_filesystem(
         &mut build_runner.mtime_cache,
         &mut build_runner.checksum_cache,
@@ -1605,6 +1620,8 @@ fn calculate(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult
         &build_root,
         cargo_exe,
         build_runner.bcx.gctx,
+        &fingerprint_env,
+        inherit_process_env,
     )?;
 
     let fingerprint = Arc::new(fingerprint);
@@ -1891,7 +1908,11 @@ fn build_script_local_fingerprints(
     // obvious.
     let pkg_root = unit.pkg.root().to_path_buf();
     let build_dir = build_root(build_runner);
-    let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
+    let configured_env = build_runner.bcx.gctx.env_config()?;
+    let (env_config, inherit_process_env) = match build_runner.bcx.artifact_family(unit) {
+        Some(family) => crate::core::artifact_family::input_environment(family, configured_env)?,
+        None => (Arc::clone(configured_env), true),
+    };
     let calculate =
         move |deps: &BuildDeps, pkg_fingerprint: Option<&dyn Fn() -> CargoResult<String>>| {
             if deps.rerun_if_changed.is_empty() && deps.rerun_if_env_changed.is_empty() {
@@ -1926,6 +1947,7 @@ fn build_script_local_fingerprints(
                 &build_dir,
                 &pkg_root,
                 &env_config,
+                inherit_process_env,
             )))
         };
 
@@ -1962,6 +1984,7 @@ fn local_fingerprints_deps(
     build_root: &Path,
     pkg_root: &Path,
     env_config: &Arc<HashMap<String, OsString>>,
+    inherit_process_env: bool,
 ) -> Vec<LocalFingerprint> {
     debug!("new local fingerprints deps {:?}", pkg_root);
     let mut local = Vec::new();
@@ -1986,7 +2009,7 @@ fn local_fingerprints_deps(
     local.extend(
         deps.rerun_if_env_changed
             .iter()
-            .map(|s| LocalFingerprint::from_env(s, env_config)),
+            .map(|s| LocalFingerprint::from_env(s, env_config, inherit_process_env)),
     );
 
     local

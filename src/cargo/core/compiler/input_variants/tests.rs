@@ -22,8 +22,8 @@ fn variant_key_is_independent_of_declaration_order() {
     second.sort();
 
     assert_eq!(
-        variant_key(&variable_values(first.iter(), &env)),
-        variant_key(&variable_values(second.iter(), &env))
+        variant_key(&variable_values(first.iter(), &env, true)),
+        variant_key(&variable_values(second.iter(), &env, true))
     );
 }
 
