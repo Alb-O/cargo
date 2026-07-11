@@ -290,6 +290,7 @@ fn to_workspace_root_config(
         &normalized_toml.members,
         &normalized_toml.default_members,
         &normalized_toml.exclude,
+        normalized_toml.open_membership.unwrap_or(false),
         &Some(inheritable),
         &normalized_toml.metadata,
     );

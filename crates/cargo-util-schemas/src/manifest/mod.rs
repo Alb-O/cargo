@@ -128,6 +128,7 @@ pub struct TomlWorkspace {
     pub members: Option<Vec<String>>,
     pub exclude: Option<Vec<String>>,
     pub default_members: Option<Vec<String>>,
+    pub open_membership: Option<bool>,
     pub resolver: Option<String>,
 
     #[cfg_attr(

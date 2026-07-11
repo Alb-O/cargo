@@ -21,6 +21,7 @@ The root `Cargo.toml` of a workspace supports the following sections:
   * [`resolver`](resolver.md#resolver-versions) --- Sets the dependency resolver to use.
   * [`members`](#the-members-and-exclude-fields) --- Packages to include in the workspace.
   * [`exclude`](#the-members-and-exclude-fields) --- Packages to exclude from the workspace.
+  * [`open-membership`](#the-open-membership-field) --- allows invoked descendant packages to attach without being listed in `members`
   * [`default-members`](#the-default-members-field) --- Packages to operate on when a specific package wasn't selected.
   * [`package`](#the-package-table) --- Keys for inheriting in packages.
   * [`dependencies`](#the-dependencies-table) --- Keys for inheriting in package dependencies.
@@ -116,6 +117,22 @@ definition to determine which workspace to use. The [`package.workspace`]
 manifest key can be used in member crates to point at a workspace's root to
 override this automatic search. The manual setting can be useful if the member
 is not inside a subdirectory of the workspace root.
+
+## The `open-membership` field
+
+The `open-membership` field allows packages below the workspace root to attach to the workspace when Cargo is invoked from that package or with its manifest:
+
+```toml
+[workspace]
+members = ["tools/release"]
+open-membership = true
+```
+
+An attached package can inherit workspace fields and uses the workspace's lockfile, output directory, profiles, patches, and other root-owned settings. Its in-workspace path dependencies join the same invocation. The package does not need to appear in `members`.
+
+Cargo does not scan the workspace directory for open members. Commands invoked at the workspace root therefore operate on the root and enumerated members as usual. An open member becomes known only when its manifest is selected, and it is the default package for that invocation.
+
+Open membership applies only to packages hierarchically below the workspace root. The nearest enclosing workspace wins, and `exclude` prevents dynamic attachment. Packages outside the workspace root must still be explicitly listed in `members`, even when they use [`package.workspace`] to point to the root.
 
 ### Package selection
 

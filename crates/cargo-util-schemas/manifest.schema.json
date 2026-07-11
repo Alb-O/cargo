@@ -1072,6 +1072,12 @@
             "type": "string"
           }
         },
+        "open-membership": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "resolver": {
           "type": [
             "string",

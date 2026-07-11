@@ -409,6 +409,206 @@ Alternatively, to keep it out of the workspace, add the package to the `workspac
 }
 
 #[cargo_test]
+fn open_membership_attaches_the_invoked_child() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["listed"]
+                open-membership = true
+                resolver = "3"
+
+                [workspace.package]
+                version = "1.2.3"
+                edition = "2024"
+
+                [workspace.dependencies]
+                shared = { path = "shared" }
+            "#,
+        )
+        .file("listed/Cargo.toml", &basic_manifest("listed", "0.1.0"))
+        .file("listed/src/lib.rs", "pub fn listed() {}")
+        .file(
+            "dynamic/Cargo.toml",
+            r#"
+                [package]
+                name = "dynamic"
+                version.workspace = true
+                edition.workspace = true
+
+                [dependencies]
+                shared.workspace = true
+            "#,
+        )
+        .file("dynamic/src/lib.rs", "pub fn dynamic() { shared::shared(); }")
+        .file("shared/Cargo.toml", &basic_manifest("shared", "0.1.0"))
+        .file("shared/src/lib.rs", "pub fn shared() {}")
+        .build();
+
+    p.cargo("check --workspace")
+        .with_stderr_data(str![[r#"
+[CHECKING] listed v0.1.0 ([ROOT]/foo/listed)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    p.root().join("Cargo.lock").rm_rf();
+    p.root().join("target").rm_rf();
+
+    p.cargo("check")
+        .cwd("dynamic")
+        .with_stderr_data(str![[r#"
+[CHECKING] shared v0.1.0 ([ROOT]/foo/shared)
+[CHECKING] dynamic v1.2.3 ([ROOT]/foo/dynamic)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    p.cargo("locate-project --workspace --message-format plain")
+        .cwd("dynamic")
+        .with_stdout_data(str![[r#"
+[ROOT]/foo/Cargo.toml
+
+"#]])
+        .run();
+
+    assert!(p.root().join("Cargo.lock").is_file());
+    assert!(!p.root().join("dynamic/Cargo.lock").is_file());
+    assert!(!p.root().join("dynamic/target").is_dir());
+}
+
+#[cargo_test]
+fn open_membership_honors_exclude() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                open-membership = true
+                exclude = ["dynamic"]
+            "#,
+        )
+        .file("dynamic/Cargo.toml", &basic_manifest("dynamic", "0.1.0"))
+        .file("dynamic/src/lib.rs", "")
+        .build();
+
+    p.cargo("check").cwd("dynamic").run();
+
+    assert!(!p.root().join("Cargo.lock").is_file());
+    assert!(p.root().join("dynamic/Cargo.lock").is_file());
+    assert!(p.root().join("dynamic/target").is_dir());
+}
+
+#[cargo_test]
+fn open_membership_uses_the_nearest_workspace() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                open-membership = true
+            "#,
+        )
+        .file(
+            "nested/Cargo.toml",
+            r#"
+                [workspace]
+                open-membership = true
+            "#,
+        )
+        .file(
+            "nested/dynamic/Cargo.toml",
+            &basic_manifest("dynamic", "0.1.0"),
+        )
+        .file("nested/dynamic/src/lib.rs", "")
+        .build();
+
+    p.cargo("check").cwd("nested/dynamic").run();
+
+    assert!(!p.root().join("Cargo.lock").is_file());
+    assert!(p.root().join("nested/Cargo.lock").is_file());
+    assert!(!p.root().join("nested/dynamic/Cargo.lock").is_file());
+    assert!(p.root().join("nested/target").is_dir());
+}
+
+#[cargo_test]
+fn open_membership_does_not_attach_an_outside_pointer() {
+    let _root = project()
+        .at("root")
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                open-membership = true
+            "#,
+        )
+        .build();
+    let member = project()
+        .at("outside")
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "outside"
+                version = "0.1.0"
+                edition = "2024"
+                workspace = "../root"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    member
+        .cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] current package believes it's in a workspace when it's not:
+current:   [ROOT]/outside/Cargo.toml
+workspace: [ROOT]/root/Cargo.toml
+
+this may be fixable by adding `../outside` to the `workspace.members` array of the manifest located at: [ROOT]/root/Cargo.toml
+Alternatively, to keep it out of the workspace, add the package to the `workspace.exclude` array, or add an empty `[workspace]` table to the package's manifest.
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cargo_new_keeps_open_membership_dynamic() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = []
+                open-membership = true
+
+                [workspace.package]
+                version = "1.2.3"
+                edition = "2024"
+            "#,
+        )
+        .build();
+    let root_manifest = fs::read_to_string(p.root().join("Cargo.toml")).unwrap();
+
+    p.cargo("new dynamic --lib --vcs none").run();
+
+    assert_eq!(
+        fs::read_to_string(p.root().join("Cargo.toml")).unwrap(),
+        root_manifest
+    );
+    let child_manifest = fs::read_to_string(p.root().join("dynamic/Cargo.toml")).unwrap();
+    assert!(child_manifest.contains("version.workspace = true"));
+    assert!(child_manifest.contains("edition.workspace = true"));
+    p.cargo("check").cwd("dynamic").run();
+    assert!(p.root().join("Cargo.lock").is_file());
+    assert!(!p.root().join("dynamic/Cargo.lock").is_file());
+}
+
+#[cargo_test]
 fn invalid_parent_pointer() {
     let p = project()
         .file(

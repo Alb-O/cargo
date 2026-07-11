@@ -36,7 +36,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         }
         WhatToFind::Workspace => {
             root_manifest = args.root_manifest(gctx)?;
-            // Try fast path first - only works when package is explicitly listed in members
+            // Try the membership-only fast path before loading the full workspace.
             if let Some(ws_root) =
                 cargo::core::find_workspace_root_with_membership_check(&root_manifest, gctx)?
             {

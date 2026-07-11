@@ -843,6 +843,11 @@ fn mk(gctx: &GlobalContext, opts: &MkOptions<'_>) -> CargoResult<()> {
         if let Ok(mut workspace_document) = root_manifest.parse::<toml_edit::DocumentMut>() {
             let display_path = get_display_path(&root_manifest_path, &path)?;
             let can_be_a_member = can_be_workspace_member(&display_path, &workspace_document)?;
+            let open_membership = workspace_document
+                .get("workspace")
+                .and_then(|workspace| workspace.get("open-membership"))
+                .and_then(|open| open.as_bool())
+                .unwrap_or(false);
             // Only try to inherit the workspace stuff if the new package can be a member of the workspace.
             if can_be_a_member {
                 if let Some(workspace_package_keys) = workspace_document
@@ -867,12 +872,14 @@ fn mk(gctx: &GlobalContext, opts: &MkOptions<'_>) -> CargoResult<()> {
                     manifest["lints"] = toml_edit::Item::Table(table);
                 }
 
-                // Try to add the new package to the workspace members.
-                if update_manifest_with_new_member(
-                    &root_manifest_path,
-                    &mut workspace_document,
-                    &display_path,
-                )? {
+                // Open workspaces discover packages at invocation time and keep members unchanged.
+                if !open_membership
+                    && update_manifest_with_new_member(
+                        &root_manifest_path,
+                        &mut workspace_document,
+                        &display_path,
+                    )?
+                {
                     gctx.shell().status(
                         "Adding",
                         format!(

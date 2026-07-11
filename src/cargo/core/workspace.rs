@@ -214,6 +214,8 @@ pub struct WorkspaceRootConfig {
     members: Option<Vec<String>>,
     default_members: Option<Vec<String>>,
     exclude: Vec<String>,
+    /// Whether an invoked descendant can attach without appearing in `members`.
+    open_membership: bool,
     inheritable_fields: InheritableFields,
     custom_metadata: Option<toml::Value>,
 }
@@ -960,6 +962,13 @@ impl<'gctx> Workspace<'gctx> {
 
         self.find_path_deps(&root_manifest_path, &root_manifest_path, false)?;
 
+        let current_is_open_member = !self.members.contains(&self.current_manifest)
+            && workspace_config.accepts_open_member(&self.current_manifest);
+        if current_is_open_member {
+            let current_manifest = self.current_manifest.clone();
+            self.find_path_deps(&current_manifest, &root_manifest_path, false)?;
+        }
+
         if let Some(default) = default_members_paths {
             for (path, default_member_glob) in default {
                 let normalized_path = paths::normalize_path(&path);
@@ -988,6 +997,8 @@ impl<'gctx> Workspace<'gctx> {
                 }
                 self.default_members.push(manifest_path)
             }
+        } else if current_is_open_member {
+            self.default_members.push(self.current_manifest.clone());
         } else if self.is_virtual() {
             self.default_members = self.members.iter().cloned().collect();
         } else {
@@ -2028,6 +2039,7 @@ impl WorkspaceRootConfig {
         members: &Option<Vec<String>>,
         default_members: &Option<Vec<String>>,
         exclude: &Option<Vec<String>>,
+        open_membership: bool,
         inheritable: &Option<InheritableFields>,
         custom_metadata: &Option<toml::Value>,
     ) -> WorkspaceRootConfig {
@@ -2036,6 +2048,7 @@ impl WorkspaceRootConfig {
             members: members.clone(),
             default_members: default_members.clone(),
             exclude: exclude.clone().unwrap_or_default(),
+            open_membership,
             inheritable_fields: inheritable.clone().unwrap_or_default(),
             custom_metadata: custom_metadata.clone(),
         }
@@ -2092,6 +2105,18 @@ impl WorkspaceRootConfig {
             }
             None => false,
         }
+    }
+
+    /// Checks if a package can dynamically attach to this workspace.
+    fn accepts_open_member(&self, manifest_path: &Path) -> bool {
+        self.open_membership
+            && paths::normalize_path(manifest_path).starts_with(&self.root_dir)
+            && !self.is_excluded(manifest_path)
+    }
+
+    fn accepts_member(&self, manifest_path: &Path) -> bool {
+        (self.is_explicitly_listed_member(manifest_path) && !self.is_excluded(manifest_path))
+            || self.accepts_open_member(manifest_path)
     }
 
     fn has_members_list(&self) -> bool {
@@ -2232,9 +2257,7 @@ pub fn find_workspace_root(
 /// Finds the workspace root for a manifest, with minimal verification.
 ///
 /// This is similar to `find_workspace_root`, but additionally verifies that the
-/// package and workspace agree on each other:
-/// - If the package has an explicit `package.workspace` pointer, it is trusted
-/// - Otherwise, the workspace must include the package in its `members` list
+/// workspace accepts the package through enumerated or open membership.
 pub fn find_workspace_root_with_membership_check(
     manifest_path: &Path,
     gctx: &GlobalContext,
@@ -2262,9 +2285,7 @@ pub fn find_workspace_root_with_membership_check(
 
             // Verify the workspace includes this package in its members
             if let WorkspaceConfig::Root(ref root_config) = *ws_manifest.workspace_config() {
-                if root_config.is_explicitly_listed_member(manifest_path)
-                    && !root_config.is_excluded(manifest_path)
-                {
+                if root_config.accepts_member(manifest_path) {
                     return Ok(Some(ws_manifest_path));
                 }
             }
@@ -2277,9 +2298,7 @@ pub fn find_workspace_root_with_membership_check(
                 let source_id = SourceId::for_manifest_path(candidate_manifest_path)?;
                 let manifest = read_manifest(candidate_manifest_path, source_id, gctx)?;
                 if let WorkspaceConfig::Root(ref root_config) = *manifest.workspace_config() {
-                    if root_config.is_explicitly_listed_member(manifest_path)
-                        && !root_config.is_excluded(manifest_path)
-                    {
+                    if root_config.accepts_member(manifest_path) {
                         return Ok(Some(candidate_manifest_path.to_path_buf()));
                     }
                 }
