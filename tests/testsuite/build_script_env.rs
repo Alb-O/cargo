@@ -53,7 +53,6 @@ fn rerun_if_env_changes() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])

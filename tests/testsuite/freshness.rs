@@ -2437,7 +2437,6 @@ fn rerun_if_changes() {
     p.cargo("build -v")
         .env("FOO", "1")
         .with_stderr_data(str![[r#"
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the env variable FOO changed
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [RUNNING] `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build`
 [RUNNING] `rustc [..]
@@ -2457,7 +2456,6 @@ fn rerun_if_changes() {
         .env("FOO", "1")
         .env("BAR", "1")
         .with_stderr_data(str![[r#"
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the env variable BAR changed
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [RUNNING] `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build`
 [RUNNING] `rustc [..]
@@ -2477,10 +2475,7 @@ fn rerun_if_changes() {
     p.cargo("build -v")
         .env("BAR", "2")
         .with_stderr_data(str![[r#"
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the env variable FOO changed
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[RUNNING] `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build`
-[RUNNING] `rustc [..]
+[FRESH] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])

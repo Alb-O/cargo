@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tracing::debug;
 
 use super::{BuildContext, BuildRunner, CompileKind, FileFlavor, Layout};
+use crate::core::compiler::build_env_variants::{BuildEnvVariant, FINGERPRINT_ENV_VARS};
 use crate::core::compiler::{CompileMode, CompileTarget, CrateType, FileType, Unit};
 use crate::core::{Target, TargetKind, Workspace};
 use crate::util::{self, CargoResult, OnceExt, StableHasher};
@@ -94,6 +95,7 @@ pub struct Metadata {
     c_metadata: UnitHash,
     c_extra_filename: bool,
     pkg_dir: bool,
+    build_env_affected: bool,
 }
 
 impl Metadata {
@@ -116,6 +118,7 @@ impl Metadata {
     pub fn pkg_dir(&self) -> Option<UnitHash> {
         self.pkg_dir.then_some(self.unit_id)
     }
+
 }
 
 /// Collection of information about the files emitted by the compiler, and the
@@ -133,6 +136,8 @@ pub struct CompilationFiles<'a, 'gctx> {
     ws: &'a Workspace<'gctx>,
     /// Metadata hash to use for each unit.
     metas: HashMap<Unit, Metadata>,
+    /// Selected environment branch for each build-script execution unit.
+    build_env_variants: HashMap<Unit, BuildEnvVariant>,
     /// For each Unit, a list all files produced.
     outputs: HashMap<Unit, OnceCell<Arc<Vec<OutputFile>>>>,
 }
@@ -166,25 +171,36 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
         build_runner: &BuildRunner<'a, 'gctx>,
         host: Layout,
         target: HashMap<CompileTarget, Layout>,
-    ) -> CompilationFiles<'a, 'gctx> {
+    ) -> CargoResult<CompilationFiles<'a, 'gctx>> {
         let mut metas = HashMap::default();
+        let mut build_env_variants = HashMap::default();
+        let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
         for unit in &build_runner.bcx.roots {
-            metadata_of(unit, build_runner, &mut metas);
+            metadata_of(
+                unit,
+                build_runner,
+                &host,
+                &target,
+                &env_config,
+                &mut metas,
+                &mut build_env_variants,
+            )?;
         }
         let outputs = metas
             .keys()
             .cloned()
             .map(|unit| (unit, OnceCell::new()))
             .collect();
-        CompilationFiles {
+        Ok(CompilationFiles {
             ws: build_runner.bcx.ws,
             host,
             target,
             export_dir: build_runner.bcx.build_config.export_dir.clone(),
             roots: build_runner.bcx.roots.clone(),
             metas,
+            build_env_variants,
             outputs,
-        }
+        })
     }
 
     /// Returns the appropriate directory layout for either a plugin or not.
@@ -202,6 +218,10 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
     /// [`fingerprint`]: super::super::fingerprint#fingerprints-and-metadata
     pub fn metadata(&self, unit: &Unit) -> Metadata {
         self.metas[unit]
+    }
+
+    pub fn build_env_variant(&self, unit: &Unit) -> Option<&BuildEnvVariant> {
+        self.build_env_variants.get(unit)
     }
 
     /// Gets the short hash based only on the `PackageId`.
@@ -312,8 +332,18 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
     }
 
     /// Directory where incremental output for the given unit should go.
-    pub fn incremental_dir(&self, unit: &Unit) -> &Path {
-        self.layout(unit.kind).build_dir().incremental()
+    pub fn incremental_dir(&self, unit: &Unit) -> PathBuf {
+        let root = self.layout(unit.kind).build_dir().incremental();
+        let metadata = self.metadata(unit);
+        if metadata.build_env_affected {
+            root.join(format!(
+                "build-env-{}-{}",
+                unit.target.crate_name(),
+                metadata.unit_id
+            ))
+        } else {
+            root.to_path_buf()
+        }
     }
 
     /// Directory where timing output should go.
@@ -700,30 +730,65 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
 fn metadata_of<'a>(
     unit: &Unit,
     build_runner: &BuildRunner<'_, '_>,
+    host: &Layout,
+    targets: &HashMap<CompileTarget, Layout>,
+    env_config: &Arc<HashMap<String, std::ffi::OsString>>,
     metas: &'a mut HashMap<Unit, Metadata>,
-) -> &'a Metadata {
+    build_env_variants: &mut HashMap<Unit, BuildEnvVariant>,
+) -> CargoResult<&'a Metadata> {
     if !metas.contains_key(unit) {
-        let meta = compute_metadata(unit, build_runner, metas);
+        let meta = compute_metadata(
+            unit,
+            build_runner,
+            host,
+            targets,
+            env_config,
+            metas,
+            build_env_variants,
+        )?;
         metas.insert(unit.clone(), meta);
         for dep in build_runner.unit_deps(unit) {
-            metadata_of(&dep.unit, build_runner, metas);
+            metadata_of(
+                &dep.unit,
+                build_runner,
+                host,
+                targets,
+                env_config,
+                metas,
+                build_env_variants,
+            )?;
         }
     }
-    &metas[unit]
+    Ok(&metas[unit])
 }
 
 /// Computes the metadata hash for the given [`Unit`].
 fn compute_metadata(
     unit: &Unit,
     build_runner: &BuildRunner<'_, '_>,
+    host: &Layout,
+    targets: &HashMap<CompileTarget, Layout>,
+    env_config: &Arc<HashMap<String, std::ffi::OsString>>,
     metas: &mut HashMap<Unit, Metadata>,
-) -> Metadata {
+    build_env_variants: &mut HashMap<Unit, BuildEnvVariant>,
+) -> CargoResult<Metadata> {
     let bcx = &build_runner.bcx;
     let deps_metadata = build_runner
         .unit_deps(unit)
         .iter()
-        .map(|dep| *metadata_of(&dep.unit, build_runner, metas))
-        .collect::<Vec<_>>();
+        .map(|dep| {
+            metadata_of(
+                &dep.unit,
+                build_runner,
+                host,
+                targets,
+                env_config,
+                metas,
+                build_env_variants,
+            )
+            .copied()
+        })
+        .collect::<CargoResult<Vec<_>>>()?;
     let c_extra_filename = use_extra_filename(bcx, unit);
     let pkg_dir = use_pkg_dir(bcx, unit);
 
@@ -851,15 +916,39 @@ fn compute_metadata(
         }
     }
 
+    let mut build_env_affected = deps_metadata
+        .iter()
+        .any(|metadata| metadata.build_env_affected);
+    if unit.mode.is_run_custom_build() {
+        let stable_unit_id = UnitHash(Hasher::finish(&unit_id_hasher));
+        let build_root = match unit.kind {
+            CompileKind::Host => host,
+            CompileKind::Target(target) => &targets[&target],
+        }
+        .build_dir()
+        .root();
+        let variant = BuildEnvVariant::select(
+            build_root,
+            unit.pkg.name().as_str(),
+            stable_unit_id,
+            env_config,
+            bcx.gctx.get_env_os(FINGERPRINT_ENV_VARS),
+        )?;
+        build_env_affected |= variant.is_branched();
+        variant.hash(&mut unit_id_hasher);
+        build_env_variants.insert(unit.clone(), variant);
+    }
+
     let c_metadata = UnitHash(Hasher::finish(&c_metadata_hasher));
     let unit_id = UnitHash(Hasher::finish(&unit_id_hasher));
 
-    Metadata {
+    Ok(Metadata {
         unit_id,
         c_metadata,
         c_extra_filename,
         pkg_dir,
-    }
+        build_env_affected,
+    })
 }
 
 /// HACK: Detect the *potential* presence of `--remap-path-prefix`

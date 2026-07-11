@@ -30,6 +30,7 @@
 
 pub mod artifact;
 mod build_config;
+mod build_env_variants;
 pub(crate) mod build_context;
 pub(crate) mod build_runner;
 mod compilation;
@@ -2058,7 +2059,7 @@ fn add_codegen_incremental(
 ) {
     let dir = build_runner.files().incremental_dir(&unit);
     let mut arg = OsString::from("incremental=");
-    arg.push(dir.as_os_str());
+    arg.push(dir);
     cmd.arg("-C").arg(arg);
 }
 

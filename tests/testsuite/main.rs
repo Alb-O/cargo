@@ -15,6 +15,7 @@ mod build_analysis;
 mod build_dir;
 mod build_dir_fine_grain_locking;
 mod build_dir_legacy;
+mod build_env_variants;
 mod build_script;
 mod build_script_env;
 mod build_script_extra_link_arg;

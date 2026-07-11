@@ -556,6 +556,8 @@ pub fn prepare_target(
         // thunk we can invoke on a foreign thread to calculate this.
         let build_script_outputs = Arc::clone(&build_runner.build_script_outputs);
         let metadata = build_runner.get_run_build_script_metadata(unit);
+        let build_env_variant = build_runner.files().build_env_variant(unit).cloned();
+        let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
         let (gen_local, _overridden) = build_script_local_fingerprints(build_runner, unit)?;
         let output_path = build_runner.build_explicit_deps[unit]
             .build_script_output
@@ -573,6 +575,10 @@ pub fn prepare_target(
             // hobble along if it happens to return `Some`.
             if let Some(new_local) = (gen_local)(&deps, None)? {
                 *fingerprint.local.lock().unwrap() = new_local;
+            }
+
+            if let Some(variant) = build_env_variant {
+                variant.record(&output.rerun_if_env_changed, &env_config)?;
             }
 
             write_fingerprint(&loc, &fingerprint)

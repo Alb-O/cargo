@@ -273,6 +273,12 @@ fn clean_specs(
             for (_compile_kind, layout) in &layouts_with_host {
                 let dir = layout.build_dir().build_unit(&pkg.name());
                 clean_ctx.rm_rf(&dir)?;
+                let variants = layout
+                    .build_dir()
+                    .root()
+                    .join(".build-env-variants")
+                    .join(pkg.name().as_str());
+                clean_ctx.rm_rf(&variants)?;
             }
 
             // Remove the uplifted copy.
@@ -318,9 +324,11 @@ fn clean_specs(
                             }
                         }
                         let path_dash = format!("{}-", crate_name);
+                        let build_env_path_dash = format!("build-env-{}-", crate_name);
 
                         dirs_to_clean.mark_utf(layout.build_dir().incremental(), |filename| {
                             filename.starts_with(&path_dash)
+                                || filename.starts_with(&build_env_path_dash)
                         });
                     }
                 }
@@ -332,6 +340,12 @@ fn clean_specs(
 
             // Clean fingerprints.
             for (_, layout) in &layouts_with_host {
+                let variants = layout
+                    .build_dir()
+                    .root()
+                    .join(".build-env-variants")
+                    .join(pkg.name().as_str());
+                clean_ctx.rm_rf(&variants)?;
                 dirs_to_clean.mark_utf(layout.build_dir().legacy_fingerprint(), |filename| {
                     let Some((pkg_name, _)) = filename.rsplit_once('-') else {
                         return false;
@@ -358,6 +372,7 @@ fn clean_specs(
                 let crate_name: Rc<str> = target.crate_name().into();
                 let path_dot: &str = &format!("{crate_name}.");
                 let path_dash: &str = &format!("{crate_name}-");
+                let build_env_path_dash: &str = &format!("build-env-{crate_name}-");
                 for &mode in &[
                     CompileMode::Build,
                     CompileMode::Test,
@@ -422,6 +437,7 @@ fn clean_specs(
                         // TODO: what to do about build_script_build?
                         dirs_to_clean.mark_utf(layout.build_dir().incremental(), |filename| {
                             filename.starts_with(path_dash)
+                                || filename.starts_with(build_env_path_dash)
                         });
                     }
                 }
