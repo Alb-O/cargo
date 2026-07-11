@@ -1123,7 +1123,6 @@ The `[resolver]` table overrides [dependency resolution behavior](resolver.md) f
 #### `resolver.lockfile-path`
 * Type: string (path)
 * Default: `<workspace_root>/Cargo.lock`
-* Environment: `CARGO_RESOLVER_LOCKFILE_PATH`
 
 Specifies the path to the lockfile to use when resolving dependencies.
 This option is useful when working with read-only source directories.
