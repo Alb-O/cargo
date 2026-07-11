@@ -1,4 +1,5 @@
 use std::io::prelude::*;
+use std::collections::BTreeMap;
 
 use crate::core::resolver::encode::into_resolve;
 use crate::core::{Resolve, ResolveVersion, Workspace};
@@ -6,7 +7,9 @@ use crate::util::Filesystem;
 use crate::util::errors::CargoResult;
 
 use anyhow::Context as _;
-use cargo_util_schemas::lockfile::TomlLockfile;
+use cargo_util_schemas::lockfile::{
+    TomlLockfile, TomlLockfileDependency, TomlLockfilePackageId,
+};
 
 pub const LOCKFILE_NAME: &str = "Cargo.lock";
 
@@ -33,7 +36,7 @@ pub fn load_pkg_lockfile(ws: &Workspace<'_>) -> CargoResult<Option<Resolve>> {
 
 /// Generate a toml String of Cargo.lock from a Resolve.
 pub fn resolve_to_string(ws: &Workspace<'_>, resolve: &Resolve) -> CargoResult<String> {
-    let (_orig, out, _lock_root) = resolve_to_string_orig(ws, resolve);
+    let (_orig, out, _lock_root) = resolve_to_string_orig(ws, resolve, false)?;
     Ok(out)
 }
 
@@ -42,7 +45,7 @@ pub fn resolve_to_string(ws: &Workspace<'_>, resolve: &Resolve) -> CargoResult<S
 /// Returns `true` if the lockfile changed
 #[tracing::instrument(skip_all)]
 pub fn write_pkg_lockfile(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoResult<bool> {
-    let (orig, mut out, lock_root) = resolve_to_string_orig(ws, resolve);
+    let (orig, mut out, lock_root) = resolve_to_string_orig(ws, resolve, true)?;
 
     // If the lock file contents haven't changed so don't rewrite it. This is
     // helpful on read-only filesystems.
@@ -79,7 +82,7 @@ pub fn write_pkg_lockfile(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoRes
 
     if current_version < default_version {
         resolve.set_version(default_version);
-        out = serialize_resolve(resolve, orig.as_deref());
+        out = serialize_workspace_resolve(ws, resolve, orig.as_deref())?;
     } else if current_version > ResolveVersion::max_stable() && !next_lockfile_bump {
         // The next version hasn't yet stabilized.
         anyhow::bail!("lock file version `{current_version:?}` requires `-Znext-lockfile-bump`")
@@ -109,7 +112,8 @@ pub fn write_pkg_lockfile(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoRes
 fn resolve_to_string_orig(
     ws: &Workspace<'_>,
     resolve: &Resolve,
-) -> (Option<String>, String, Filesystem) {
+    accumulate_open_members: bool,
+) -> CargoResult<(Option<String>, String, Filesystem)> {
     // Load the original lock file if it exists.
     let lock_root = ws.lock_root();
     let orig = lock_root.open_ro_shared(LOCKFILE_NAME, ws.gctx(), "Cargo.lock file");
@@ -118,13 +122,164 @@ fn resolve_to_string_orig(
         f.read_to_string(&mut s)?;
         Ok(s)
     });
-    let out = serialize_resolve(resolve, orig.as_deref().ok());
-    (orig.ok(), out, lock_root)
+    let orig = orig.ok();
+    let out = if accumulate_open_members {
+        serialize_workspace_resolve(ws, resolve, orig.as_deref())?
+    } else {
+        serialize_resolve(resolve, orig.as_deref())
+    };
+    Ok((orig, out, lock_root))
+}
+
+fn serialize_workspace_resolve(
+    ws: &Workspace<'_>,
+    resolve: &Resolve,
+    orig: Option<&str>,
+) -> CargoResult<String> {
+    if !ws.has_open_membership() || orig.is_none() {
+        return Ok(serialize_resolve(resolve, orig));
+    }
+
+    let previous: TomlLockfile = toml::from_str(orig.unwrap())?;
+    let current_serialized = serialize_resolve(resolve, None);
+    let current: TomlLockfile = toml::from_str(&current_serialized)?;
+    let accumulated = accumulate_lockfile_packages(previous, current)?;
+    Ok(serialize_lockfile(&accumulated, resolve.version(), orig))
+}
+
+fn accumulate_lockfile_packages(
+    mut previous: TomlLockfile,
+    mut current: TomlLockfile,
+) -> CargoResult<TomlLockfile> {
+    let mut previous_packages = previous.package.take().unwrap_or_default();
+    let mut current_packages = current.package.take().unwrap_or_default();
+    qualify_dependency_ids(&mut previous_packages)?;
+    qualify_dependency_ids(&mut current_packages)?;
+
+    let mut packages = previous_packages
+        .into_iter()
+        .map(|package| (lock_package_key(&package), package))
+        .collect::<BTreeMap<_, _>>();
+    packages.extend(
+        current_packages
+            .into_iter()
+            .map(|package| (lock_package_key(&package), package)),
+    );
+
+    let mut packages = packages.into_values().collect::<Vec<_>>();
+    compact_dependency_ids(&mut packages);
+    current.package = Some(packages);
+    Ok(current)
+}
+
+type LockPackageKey = (String, String, Option<String>);
+
+fn lock_package_key(package: &TomlLockfileDependency) -> LockPackageKey {
+    (
+        package.name.clone(),
+        package.version.clone(),
+        package.source.as_ref().map(|source| source.source_str().clone()),
+    )
+}
+
+fn qualify_dependency_ids(packages: &mut [TomlLockfileDependency]) -> CargoResult<()> {
+    let package_ids = packages
+        .iter()
+        .map(|package| TomlLockfilePackageId {
+            name: package.name.clone(),
+            version: Some(package.version.clone()),
+            source: package.source.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    for package in packages {
+        if let Some(dependencies) = &mut package.dependencies {
+            for dependency in dependencies {
+                *dependency = qualified_dependency_id(dependency, &package_ids)?;
+            }
+        }
+        if let Some(replacement) = &mut package.replace {
+            *replacement = qualified_dependency_id(replacement, &package_ids)?;
+        }
+    }
+    Ok(())
+}
+
+fn qualified_dependency_id(
+    dependency: &TomlLockfilePackageId,
+    package_ids: &[TomlLockfilePackageId],
+) -> CargoResult<TomlLockfilePackageId> {
+    let matches = package_ids
+        .iter()
+        .filter(|candidate| {
+            candidate.name == dependency.name
+                && dependency
+                    .version
+                    .as_ref()
+                    .is_none_or(|version| candidate.version.as_ref() == Some(version))
+                && dependency
+                    .source
+                    .as_ref()
+                    .is_none_or(|source| candidate.source.as_ref() == Some(source))
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        anyhow::bail!(
+            "lockfile dependency `{dependency}` matched {} package entries while accumulating an open workspace lockfile",
+            matches.len()
+        );
+    }
+    Ok((*matches[0]).clone())
+}
+
+fn compact_dependency_ids(packages: &mut [TomlLockfileDependency]) {
+    let mut package_counts = BTreeMap::<String, BTreeMap<String, usize>>::new();
+    for package in packages.iter() {
+        *package_counts
+            .entry(package.name.clone())
+            .or_default()
+            .entry(package.version.clone())
+            .or_default() += 1;
+    }
+
+    for package in packages {
+        if let Some(dependencies) = &mut package.dependencies {
+            for dependency in dependencies {
+                compact_dependency_id(dependency, &package_counts);
+            }
+        }
+        if let Some(replacement) = &mut package.replace {
+            compact_dependency_id(replacement, &package_counts);
+        }
+    }
+}
+
+fn compact_dependency_id(
+    dependency: &mut TomlLockfilePackageId,
+    package_counts: &BTreeMap<String, BTreeMap<String, usize>>,
+) {
+    let version = dependency.version.as_ref().unwrap();
+    let versions = &package_counts[&dependency.name];
+    if versions[version] == 1 {
+        dependency.source = None;
+        if versions.len() == 1 {
+            dependency.version = None;
+        }
+    }
 }
 
 #[tracing::instrument(skip_all)]
 fn serialize_resolve(resolve: &Resolve, orig: Option<&str>) -> String {
-    let toml = toml::Table::try_from(resolve).unwrap();
+    let lockfile: TomlLockfile = toml::from_str(&toml::to_string(resolve).unwrap()).unwrap();
+    serialize_lockfile(&lockfile, resolve.version(), orig)
+}
+
+fn serialize_lockfile(
+    lockfile: &TomlLockfile,
+    resolve_version: ResolveVersion,
+    orig: Option<&str>,
+) -> String {
+    let toml = toml::Table::try_from(lockfile).unwrap();
 
     let mut out = String::new();
 
@@ -197,7 +352,7 @@ fn serialize_resolve(resolve: &Resolve, orig: Option<&str>) -> String {
     // encodings going forward, though, we want to be sure that our encoded lock
     // file doesn't contain any trailing newlines so trim out the extra if
     // necessary.
-    if resolve.version() >= ResolveVersion::V2 {
+    if resolve_version >= ResolveVersion::V2 {
         while out.ends_with("\n\n") {
             out.pop();
         }

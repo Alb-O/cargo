@@ -502,6 +502,158 @@ fn open_membership_attaches_the_invoked_child() {
 }
 
 #[cargo_test]
+fn open_membership_accumulates_discovered_member_locks() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = []
+                open-membership = true
+                resolver = "3"
+            "#,
+        )
+        .file(
+            "dynamic-a/Cargo.toml",
+            r#"
+                [package]
+                name = "dynamic-a"
+                version = "0.1.0"
+                edition = "2024"
+
+                [dependencies]
+                dep-a = { path = "../dep-a" }
+            "#,
+        )
+        .file("dynamic-a/src/lib.rs", "pub fn dynamic() { dep_a::dep(); }")
+        .file("dep-a/Cargo.toml", &basic_manifest("dep-a", "0.1.0"))
+        .file("dep-a/src/lib.rs", "pub fn dep() {}")
+        .file(
+            "dynamic-b/Cargo.toml",
+            r#"
+                [package]
+                name = "dynamic-b"
+                version = "0.1.0"
+                edition = "2024"
+
+                [dependencies]
+                dep-b = { path = "../dep-b" }
+            "#,
+        )
+        .file("dynamic-b/src/lib.rs", "pub fn dynamic() { dep_b::dep(); }")
+        .file("dep-b/Cargo.toml", &basic_manifest("dep-b", "0.1.0"))
+        .file("dep-b/src/lib.rs", "pub fn dep() {}")
+        .file("dep-c/Cargo.toml", &basic_manifest("dep-c", "0.1.0"))
+        .file("dep-c/src/lib.rs", "pub fn dep() {}")
+        .build();
+
+    p.cargo("check").cwd("dynamic-a").run();
+    let lock = p.read_lockfile();
+    assert!(lock.contains("name = \"dynamic-a\""));
+    assert!(lock.contains("name = \"dep-a\""));
+    assert!(!lock.contains("name = \"dynamic-b\""));
+
+    p.cargo("check --locked")
+        .cwd("dynamic-b")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] cannot update the lock file [ROOT]/foo/Cargo.lock because --locked was passed to prevent this
+[HELP] to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.
+
+"#]])
+        .run();
+    p.cargo("check").cwd("dynamic-b").run();
+    let lock = p.read_lockfile();
+    assert!(lock.contains("name = \"dynamic-a\""));
+    assert!(lock.contains("name = \"dep-a\""));
+    assert!(lock.contains("name = \"dynamic-b\""));
+    assert!(lock.contains("name = \"dep-b\""));
+
+    p.change_file(
+        "dynamic-a/Cargo.toml",
+        r#"
+            [package]
+            name = "dynamic-a"
+            version = "0.1.0"
+            edition = "2024"
+
+            [dependencies]
+            dep-c = { path = "../dep-c" }
+        "#,
+    );
+    p.change_file("dynamic-a/src/lib.rs", "pub fn dynamic() { dep_c::dep(); }");
+    p.cargo("check").cwd("dynamic-a").run();
+    let lock = p.read_lockfile();
+    assert!(lock.contains("name = \"dynamic-b\""));
+    assert!(lock.contains("name = \"dep-b\""));
+    assert!(lock.contains("name = \"dep-c\""));
+
+    p.root().join("Cargo.lock").rm_rf();
+    p.cargo("check").cwd("dynamic-b").run();
+    let lock = p.read_lockfile();
+    assert!(!lock.contains("name = \"dynamic-a\""));
+    assert!(!lock.contains("name = \"dep-a\""));
+    assert!(!lock.contains("name = \"dep-c\""));
+    assert!(lock.contains("name = \"dynamic-b\""));
+    assert!(lock.contains("name = \"dep-b\""));
+}
+
+#[cargo_test]
+fn open_membership_accumulated_lock_disambiguates_versions() {
+    Package::new("shared", "1.0.0").publish();
+    Package::new("shared", "2.0.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = []
+                open-membership = true
+                resolver = "3"
+            "#,
+        )
+        .file(
+            "dynamic-a/Cargo.toml",
+            r#"
+                [package]
+                name = "dynamic-a"
+                version = "0.1.0"
+                edition = "2024"
+
+                [dependencies]
+                shared = "=1.0.0"
+            "#,
+        )
+        .file("dynamic-a/src/lib.rs", "pub fn dynamic() {}")
+        .file(
+            "dynamic-b/Cargo.toml",
+            r#"
+                [package]
+                name = "dynamic-b"
+                version = "0.1.0"
+                edition = "2024"
+
+                [dependencies]
+                shared = "=2.0.0"
+            "#,
+        )
+        .file("dynamic-b/src/lib.rs", "pub fn dynamic() {}")
+        .build();
+
+    p.cargo("check").cwd("dynamic-a").run();
+    p.cargo("check")
+        .cwd("dynamic-b")
+        .with_stderr_does_not_contain("[REMOVING] shared v1.0.0")
+        .run();
+    p.cargo("check --locked").cwd("dynamic-a").run();
+
+    let lock = p.read_lockfile();
+    assert!(lock.contains("shared 1.0.0"));
+    assert!(lock.contains("shared 2.0.0"));
+}
+
+#[cargo_test]
 fn open_membership_honors_exclude() {
     let p = project()
         .file(

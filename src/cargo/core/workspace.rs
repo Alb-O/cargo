@@ -701,6 +701,14 @@ impl<'gctx> Workspace<'gctx> {
             })
     }
 
+    /// Returns whether this workspace accepts dynamically attached descendants.
+    pub fn has_open_membership(&self) -> bool {
+        matches!(
+            self.root_maybe().workspace_config(),
+            WorkspaceConfig::Root(config) if config.open_membership
+        )
+    }
+
     /// Returns a mutable iterator over all packages in this workspace
     pub fn members_mut(&mut self) -> impl Iterator<Item = &mut Package> {
         let packages = &mut self.packages.packages;

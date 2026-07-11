@@ -132,6 +132,8 @@ An attached package can inherit workspace fields and uses the workspace's lockfi
 
 Cargo does not scan the workspace directory for open members. Commands invoked at the workspace root therefore operate on the root and enumerated members as usual. An open member becomes known only when its manifest is selected, and it is the default package for that invocation.
 
+The shared lockfile accumulates packages from open members as they are discovered. Resolving one open member updates its graph without removing packages recorded by earlier open-member invocations. Deleting the lockfile resets this discovered state; the next invocation starts it again from the members visible to that command.
+
 Open membership applies only to packages hierarchically below the workspace root. The nearest enclosing workspace wins, and `exclude` prevents dynamic attachment. Packages outside the workspace root must still be explicitly listed in `members`, even when they use [`package.workspace`] to point to the root.
 
 ### Package selection
