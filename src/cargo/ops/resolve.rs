@@ -483,7 +483,17 @@ pub fn resolve_with_previous<'gctx>(
             })
         })
     };
-    let keep_project_previous = |id: &PackageId| keep_previous(id) && !belongs_to_baseline(id);
+    let family_patch_names = ws
+        .root_patch_for_artifact_families(active_artifact_families)?
+        .into_values()
+        .flatten()
+        .map(|patch| patch.dep.package_name())
+        .collect::<HashSet<_>>();
+    let keep_project_previous = |id: &PackageId| {
+        keep_previous(id)
+            && !belongs_to_baseline(id)
+            && !family_patch_names.contains(&id.name())
+    };
 
     // While registering patches, we will record preferences for particular versions
     // of various packages.
