@@ -15,6 +15,7 @@ pub use self::workspace::{
 };
 pub use cargo_util_schemas::core::{GitReference, PackageIdSpec, SourceKind};
 
+pub mod artifact_family;
 pub mod compiler;
 pub mod dependency;
 pub mod features;

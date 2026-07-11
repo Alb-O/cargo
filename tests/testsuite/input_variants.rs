@@ -114,14 +114,14 @@ fn reuses_observed_environment_branches_and_common_dependencies() {
     let variant_incremental_dirs = fs::read_dir(incremental)
         .unwrap()
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("build-env-"))
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("input-variant-"))
         .count();
     assert_eq!(variant_incremental_dirs, 2);
 
     p.cargo("clean -p fingerprinted").run();
     assert!(!p
         .root()
-        .join("target/.build-env-variants/fingerprinted")
+        .join("target/.input-variants/v1/schemas/build-script-env/fingerprinted")
         .exists());
     let fingerprinted_incremental = fs::read_dir(p.root().join("target/debug/incremental"))
         .unwrap()
@@ -130,8 +130,88 @@ fn reuses_observed_environment_branches_and_common_dependencies() {
             entry
                 .file_name()
                 .to_string_lossy()
-                .starts_with("build-env-fingerprinted-")
+                .starts_with("input-variant-fingerprinted-")
         })
         .count();
     assert_eq!(fingerprinted_incremental, 0);
+}
+
+#[cargo_test]
+fn reuses_rustc_environment_branches() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                resolver = "2"
+                members = ["app", "observed", "shared"]
+            "#,
+        )
+        .file(
+            "shared/Cargo.toml",
+            r#"
+                [package]
+                name = "shared"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("shared/src/lib.rs", "pub fn marker() {}")
+        .file(
+            "observed/Cargo.toml",
+            r#"
+                [package]
+                name = "observed"
+                version = "0.1.0"
+                edition = "2024"
+
+                [dependencies]
+                shared = { path = "../shared" }
+            "#,
+        )
+        .file(
+            "observed/src/lib.rs",
+            r#"
+                pub fn value() -> &'static str {
+                    shared::marker();
+                    env!("COMPILE_VALUE")
+                }
+            "#,
+        )
+        .file(
+            "app/Cargo.toml",
+            r#"
+                [package]
+                name = "app"
+                version = "0.1.0"
+                edition = "2024"
+
+                [dependencies]
+                observed = { path = "../observed" }
+                shared = { path = "../shared" }
+            "#,
+        )
+        .file(
+            "app/src/main.rs",
+            "fn main() { shared::marker(); println!(\"{}\", observed::value()); }",
+        )
+        .build();
+
+    p.cargo("run -vv -p app")
+        .env("COMPILE_VALUE", "lean")
+        .with_stdout_contains("lean")
+        .run();
+    p.cargo("run -vv -p app")
+        .env("COMPILE_VALUE", "graphics")
+        .with_stdout_contains("graphics")
+        .with_stderr_contains("[FRESH] shared v0.1.0 ([ROOT]/foo/shared)")
+        .with_stderr_contains("[COMPILING] observed v0.1.0 ([ROOT]/foo/observed)")
+        .run();
+    p.cargo("run -vv -p app")
+        .env("COMPILE_VALUE", "lean")
+        .with_stdout_contains("lean")
+        .with_stderr_contains("[FRESH] shared v0.1.0 ([ROOT]/foo/shared)")
+        .with_stderr_contains("[FRESH] observed v0.1.0 ([ROOT]/foo/observed)")
+        .with_stderr_does_not_contain("[COMPILING]")
+        .run();
 }

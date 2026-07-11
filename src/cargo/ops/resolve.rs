@@ -78,6 +78,7 @@ use crate::sources::RecursivePathSource;
 use crate::util::CanonicalUrl;
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::context::FeatureUnification;
+use std::collections::BTreeSet;
 use crate::util::data_structures::{HashMap, HashSet};
 use crate::util::errors::CargoResult;
 use anyhow::Context as _;
@@ -134,7 +135,7 @@ version. This may also occur with an optional dependency that is not enabled.";
 /// `package`, which don't specify any options or features.
 pub fn resolve_ws<'a>(ws: &Workspace<'a>, dry_run: bool) -> CargoResult<(PackageSet<'a>, Resolve)> {
     let mut registry = ws.package_registry()?;
-    let resolve = resolve_with_registry(ws, &mut registry, dry_run)?;
+    let resolve = resolve_with_registry(ws, &mut registry, dry_run, &BTreeSet::new())?;
     let packages = get_resolved_packages(&resolve, registry)?;
     Ok((packages, resolve))
 }
@@ -158,7 +159,14 @@ pub fn resolve_ws_with_opts<'gctx>(
     has_dev_units: HasDevUnits,
     force_all_targets: ForceAllTargets,
     dry_run: bool,
+    artifact_families: &[crate::core::artifact_family::ArtifactFamily],
 ) -> CargoResult<WorkspaceResolve<'gctx>> {
+    let resolver_baselines =
+        crate::core::artifact_family::load_resolver_baselines(ws, artifact_families)?;
+    let active_artifact_families = artifact_families
+        .iter()
+        .map(|family| family.name.clone())
+        .collect::<BTreeSet<_>>();
     let feature_unification = ws.resolve_feature_unification();
     let individual_specs = match feature_unification {
         FeatureUnification::Selected => vec![specs.to_owned()],
@@ -187,13 +195,20 @@ pub fn resolve_ws_with_opts<'gctx>(
             None,
             specs,
             add_patches,
+            &active_artifact_families,
+            &resolver_baselines,
         )?;
         ops::print_lockfile_changes(ws, None, &resolved_with_overrides, &mut registry)?;
         (resolve, resolved_with_overrides)
     } else if ws.require_optional_deps() {
         // First, resolve the root_package's *listed* dependencies, as well as
         // downloading and updating all remotes and such.
-        let resolve = resolve_with_registry(ws, &mut registry, dry_run)?;
+        let resolve = resolve_with_registry(
+            ws,
+            &mut registry,
+            dry_run,
+            &active_artifact_families,
+        )?;
         // No need to add patches again, `resolve_with_registry` has done it.
         let add_patches = false;
 
@@ -245,6 +260,8 @@ pub fn resolve_ws_with_opts<'gctx>(
             None,
             specs,
             add_patches,
+            &active_artifact_families,
+            &resolver_baselines,
         )?;
         (Some(resolve), resolved_with_overrides)
     } else {
@@ -259,6 +276,8 @@ pub fn resolve_ws_with_opts<'gctx>(
             None,
             specs,
             add_patches,
+            &active_artifact_families,
+            &resolver_baselines,
         )?;
         // Skipping `print_lockfile_changes` as there are cases where this prints irrelevant
         // information
@@ -373,6 +392,7 @@ fn resolve_with_registry<'gctx>(
     ws: &Workspace<'gctx>,
     registry: &mut PackageRegistry<'gctx>,
     dry_run: bool,
+    active_artifact_families: &BTreeSet<String>,
 ) -> CargoResult<Resolve> {
     let prev = ops::load_pkg_lockfile(ws)?;
     let mut resolve = resolve_with_previous(
@@ -384,6 +404,8 @@ fn resolve_with_registry<'gctx>(
         None,
         &[],
         true,
+        active_artifact_families,
+        &[],
     )?;
 
     let print = if !ws.is_ephemeral() && ws.require_optional_deps() {
@@ -431,6 +453,8 @@ pub fn resolve_with_previous<'gctx>(
     keep_previous: Option<Keep<'_>>,
     specs: &[PackageIdSpec],
     register_patches: bool,
+    active_artifact_families: &BTreeSet<String>,
+    resolver_baselines: &[(String, Resolve)],
 ) -> CargoResult<Resolve> {
     // We only want one Cargo at a time resolving a crate graph since this can
     // involve a lot of frobbing of the global caches.
@@ -448,8 +472,18 @@ pub fn resolve_with_previous<'gctx>(
         registry.add_sources(Some(member.package_id().source_id()))?;
     }
 
-    // Try to keep all from previous resolve if no instruction given.
+    // Try to keep all from previous resolve if no instruction given. Family
+    // baselines take precedence over matching entries in the project lockfile.
+    // Everything outside those baselines remains governed by the project lock.
     let keep_previous = keep_previous.unwrap_or(&|_| true);
+    let belongs_to_baseline = |id: &PackageId| {
+        resolver_baselines.iter().any(|(_, baseline)| {
+            baseline.iter().any(|baseline_id| {
+                baseline_id.name() == id.name() && baseline_id.source_id() == id.source_id()
+            })
+        })
+    };
+    let keep_project_previous = |id: &PackageId| keep_previous(id) && !belongs_to_baseline(id);
 
     // While registering patches, we will record preferences for particular versions
     // of various packages.
@@ -479,13 +513,20 @@ pub fn resolve_with_previous<'gctx>(
     }
 
     let avoid_patch_ids = if register_patches {
-        register_patch_entries(registry, ws, previous, &mut version_prefs, keep_previous)?
+        register_patch_entries(
+            registry,
+            ws,
+            previous,
+            &mut version_prefs,
+            &keep_project_previous,
+            active_artifact_families,
+        )?
     } else {
         HashSet::default()
     };
 
     // Refine `keep` with patches that should avoid locking.
-    let keep = |p: &PackageId| keep_previous(p) && !avoid_patch_ids.contains(p);
+    let keep = |p: &PackageId| keep_project_previous(p) && !avoid_patch_ids.contains(p);
 
     let dev_deps = ws.require_optional_deps() || has_dev_units == HasDevUnits::Yes;
 
@@ -501,6 +542,14 @@ pub fn resolve_with_previous<'gctx>(
         let _span = tracing::span!(tracing::Level::TRACE, "prefer_package_id").entered();
         for id in r.iter().filter(keep) {
             debug!("attempting to prefer {}", id);
+            version_prefs.prefer_package_id(id);
+        }
+    }
+
+    for (family_name, baseline) in resolver_baselines {
+        trace!("artifact family baseline {family_name}: {:?}", baseline);
+        register_previous_locks(ws, registry, baseline, &|_| true, dev_deps);
+        for id in baseline.iter() {
             version_prefs.prefer_package_id(id);
         }
     }
@@ -536,6 +585,16 @@ pub fn resolve_with_previous<'gctx>(
         ResolveVersion::with_rust_version(ws.lowest_rust_version()),
         Some(ws.gctx()),
     )?;
+
+    for (family_name, baseline) in resolver_baselines {
+        for id in baseline.iter().filter(|id| !id.source_id().is_path()) {
+            if !resolved.contains(&id) {
+                anyhow::bail!(
+                    "artifact family `{family_name}` requires baseline package `{id}`, but the workspace resolved an incompatible graph"
+                );
+            }
+        }
+    }
 
     let patches = registry.patches().values().flat_map(|v| v.iter());
     resolved.register_used_patches(patches);
@@ -924,9 +983,13 @@ fn register_patch_entries(
     previous: Option<&Resolve>,
     version_prefs: &mut VersionPreferences,
     keep_previous: Keep<'_>,
+    active_artifact_families: &BTreeSet<String>,
 ) -> CargoResult<HashSet<PackageId>> {
     let mut avoid_patch_ids = HashSet::default();
-    for (url, patches) in ws.root_patch()?.iter() {
+    for (url, patches) in ws
+        .root_patch_for_artifact_families(active_artifact_families)?
+        .iter()
+    {
         for patch in patches {
             version_prefs.prefer_dependency(patch.dep.clone());
         }

@@ -34,6 +34,28 @@ pub fn cli() -> Command {
         .arg_dry_run("Display what would be deleted without deleting anything")
         .args_conflicts_with_subcommands(true)
         .subcommand(
+            subcommand("variants")
+                .about("Clean retained compilation variants")
+                .arg_silent_suggestion()
+                .arg_dry_run("Display what would be deleted without deleting anything")
+                .arg(
+                    opt("build-dir", "Cargo build directory containing variant records")
+                        .value_name("PATH")
+                        .required(true),
+                )
+                .arg(
+                    opt("target-dir", "Cargo target directory containing retained outputs")
+                        .value_name("PATH")
+                        .required(true),
+                )
+                .arg(
+                    opt("max-age", "Delete variants unused for the given age")
+                        .value_name("DURATION")
+                        .value_parser(parse_time_span)
+                        .required(true),
+                ),
+        )
+        .subcommand(
             subcommand("gc")
                 .about("Clean global caches")
                 .hide(true)
@@ -139,6 +161,9 @@ pub fn cli() -> Command {
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     match args.subcommand() {
+        Some(("variants", args)) => {
+            return clean_variants(gctx, args);
+        }
         Some(("gc", args)) => {
             return gc(gctx, args);
         }
@@ -169,6 +194,43 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         explicit_target_dir_arg: args.contains_id("target-dir"),
     };
     ops::clean(&ws, &opts)?;
+    Ok(())
+}
+
+fn clean_variants(gctx: &GlobalContext, args: &ArgMatches) -> CliResult {
+    let build_dir = args
+        .value_of_path("build-dir", gctx)
+        .expect("required --build-dir");
+    let target_dir = args
+        .value_of_path("target-dir", gctx)
+        .expect("required --target-dir");
+    let max_age = *args
+        .get_one::<Duration>("max-age")
+        .expect("required --max-age");
+    let build_root = cargo::util::Filesystem::new(build_dir.clone());
+    let target_root = cargo::util::Filesystem::new(target_dir.clone());
+    let _build_lock = build_root.open_rw_exclusive_create(
+        ".cargo-input-variants-lock",
+        gctx,
+        "retained input variants",
+    )?;
+    let _target_lock = if target_root == build_root {
+        None
+    } else {
+        Some(target_root.open_rw_exclusive_create(
+            ".cargo-input-variants-lock",
+            gctx,
+            "retained input variants",
+        )?)
+    };
+    let removed = cargo::core::compiler::input_variants::outputs::clean_expired(
+        &build_dir,
+        &target_dir,
+        max_age,
+        args.dry_run(),
+    )?;
+    let action = if args.dry_run() { "Would remove" } else { "Removed" };
+    gctx.shell().status(action, format!("{} retained variant paths", removed.len()))?;
     Ok(())
 }
 

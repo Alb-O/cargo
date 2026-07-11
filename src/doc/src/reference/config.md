@@ -1153,6 +1153,28 @@ See the [resolver](resolver.md#rust-version) chapter for more details.
 > - `allow` is supported on any version
 > - `fallback` is respected as of 1.84
 
+### `[artifact-family]` (Harbour fork)
+
+The Harbour Cargo fork accepts named artifact families for heavy dependency subgraphs shared by independent workspaces.
+
+```toml
+[artifact-family.example]
+trigger-dependency = "engine"
+scope-package = "engine_dylib"
+activate-dependency-features = ["engine/dynamic_linking"]
+profiles = ["dev", "test"]
+host-target-only = true
+resolver-baseline = "/var/cache/cargo/example/Cargo.lock"
+environment-manifest = "/nix/store/hash-example-environment.json"
+
+[artifact-family.example.patch.crates-io.engine_dylib]
+path = "/source/shared-engine-dylib"
+```
+
+Cargo activates a family when a selected package has an active direct trigger dependency and the requested profile and target match. It applies the dependency features and patch, retains a resolver baseline separately from the workspace lockfile, and executes the scope package's dependency closure using the versioned JSON environment manifest.
+
+Pass `--without-artifact-family <name>` to a compile command to disable one configured family for that invocation.
+
 ### `[registries]`
 
 The `[registries]` table is used for specifying additional [registries]. It

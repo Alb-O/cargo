@@ -458,6 +458,31 @@ pub fn prepare_target(
 ) -> CargoResult<Job> {
     let bcx = build_runner.bcx;
     let loc = build_runner.files().fingerprint_file_path(unit, "");
+    let metadata = build_runner.files().metadata(unit);
+    let variant_outputs = if metadata.input_variant_affected() {
+        let build_root = bcx.ws.build_dir().into_path_unlocked();
+        let target_root = bcx.ws.target_dir().into_path_unlocked();
+        let mut owned = build_runner
+            .outputs(unit)?
+            .iter()
+            .map(|output| output.path.clone())
+            .collect::<Vec<_>>();
+        owned.push(build_runner.files().fingerprint_dir(unit));
+        owned.push(dep_info_loc(build_runner, unit));
+        owned.push(build_runner.files().incremental_dir(unit));
+        if unit.mode.is_run_custom_build() {
+            owned.push(build_runner.files().build_script_out_dir(unit));
+        }
+        Some((
+            build_root,
+            target_root,
+            unit.pkg.name().to_string(),
+            metadata.unit_id(),
+            owned,
+        ))
+    } else {
+        None
+    };
 
     debug!("fingerprint at: {}", loc.display());
 
@@ -491,6 +516,9 @@ pub fn prepare_target(
     }
 
     let Some(dirty_reason) = dirty_reason else {
+        if let Some((build_root, _, package, unit_id, _)) = &variant_outputs {
+            super::input_variants::outputs::touch(build_root, package, unit_id)?;
+        }
         return Ok(Job::new_fresh());
     };
 
@@ -556,7 +584,7 @@ pub fn prepare_target(
         // thunk we can invoke on a foreign thread to calculate this.
         let build_script_outputs = Arc::clone(&build_runner.build_script_outputs);
         let metadata = build_runner.get_run_build_script_metadata(unit);
-        let build_env_variant = build_runner.files().build_env_variant(unit).cloned();
+        let input_variant = build_runner.files().input_variant(unit).cloned();
         let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
         let (gen_local, _overridden) = build_script_local_fingerprints(build_runner, unit)?;
         let output_path = build_runner.build_explicit_deps[unit]
@@ -577,14 +605,36 @@ pub fn prepare_target(
                 *fingerprint.local.lock().unwrap() = new_local;
             }
 
-            if let Some(variant) = build_env_variant {
-                variant.record(&output.rerun_if_env_changed, &env_config)?;
+            if let Some(variant) = input_variant {
+                variant.record_names(&output.rerun_if_env_changed, &env_config)?;
             }
 
-            write_fingerprint(&loc, &fingerprint)
+            write_fingerprint(&loc, &fingerprint)?;
+            if let Some((build_root, target_root, package, unit_id, owned)) = variant_outputs {
+                super::input_variants::outputs::record(
+                    &build_root,
+                    &package,
+                    unit_id,
+                    owned,
+                    &[&build_root, &target_root],
+                )?;
+            }
+            Ok(())
         })
     } else {
-        Work::new(move |_| write_fingerprint(&loc, &fingerprint))
+        Work::new(move |_| {
+            write_fingerprint(&loc, &fingerprint)?;
+            if let Some((build_root, target_root, package, unit_id, owned)) = variant_outputs {
+                super::input_variants::outputs::record(
+                    &build_root,
+                    &package,
+                    unit_id,
+                    owned,
+                    &[&build_root, &target_root],
+                )?;
+            }
+            Ok(())
+        })
     };
 
     Ok(Job::new_dirty(write_fingerprint, dirty_reason))

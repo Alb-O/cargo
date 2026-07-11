@@ -26,6 +26,8 @@ pub struct ProcessBuilder {
     args: Vec<OsString>,
     /// Any environment variables that should be set for the program.
     env: BTreeMap<String, Option<OsString>>,
+    /// Whether inherited process environment variables should be cleared.
+    clear_env: bool,
     /// The directory to run the program from.
     cwd: Option<OsString>,
     /// A list of wrappers that wrap the original program when calling
@@ -81,6 +83,7 @@ impl ProcessBuilder {
             args: Vec::new(),
             cwd: None,
             env: BTreeMap::new(),
+            clear_env: false,
             wrappers: Vec::new(),
             jobserver: None,
             display_env_vars: false,
@@ -143,6 +146,12 @@ impl ProcessBuilder {
     /// (chainable) Unsets an environment variable for the process.
     pub fn env_remove(&mut self, key: &str) -> &mut ProcessBuilder {
         self.env.insert(key.to_string(), None);
+        self
+    }
+
+    /// Prevents the child process from inheriting the parent environment.
+    pub fn env_clear(&mut self) -> &mut ProcessBuilder {
+        self.clear_env = true;
         self
     }
 
@@ -504,6 +513,9 @@ impl ProcessBuilder {
         }
         if let Some(cwd) = self.get_cwd() {
             command.current_dir(cwd);
+        }
+        if self.clear_env {
+            command.env_clear();
         }
         for (k, v) in &self.env {
             match *v {

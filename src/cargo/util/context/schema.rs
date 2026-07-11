@@ -12,6 +12,7 @@
 
 use crate::util::data_structures::HashMap;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 
 use serde::Deserialize;
@@ -24,6 +25,30 @@ use crate::CargoResult;
 use super::StringList;
 use super::Value;
 use super::path::ConfigRelativePath;
+
+/// A declarative heavy dependency subgraph retained across workspaces.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct CargoArtifactFamilyConfig {
+    pub trigger_dependency: String,
+    pub scope_package: String,
+    #[serde(default)]
+    pub activate_dependency_features: Vec<String>,
+    #[serde(default)]
+    pub profiles: Vec<String>,
+    #[serde(default)]
+    pub host_target_only: bool,
+    pub resolver_baseline: ConfigRelativePath,
+    pub environment_manifest: ConfigRelativePath,
+    #[serde(default)]
+    pub patch: BTreeMap<String, BTreeMap<String, CargoArtifactFamilyPatch>>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct CargoArtifactFamilyPatch {
+    pub path: ConfigRelativePath,
+}
 
 /// The `[http]` table.
 ///

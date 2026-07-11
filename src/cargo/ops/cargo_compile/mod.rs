@@ -37,6 +37,7 @@
 
 use crate::util::data_structures::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::core::compiler::UserIntent;
@@ -86,6 +87,8 @@ pub struct CompileOptions {
     pub build_config: BuildConfig,
     /// Feature flags requested by the user.
     pub cli_features: CliFeatures,
+    /// Configured artifact families disabled for this invocation.
+    pub without_artifact_families: BTreeSet<String>,
     /// A set of packages to build.
     pub spec: Packages,
     /// Filter to apply to the root package to select which targets will be
@@ -113,6 +116,7 @@ impl CompileOptions {
         Ok(CompileOptions {
             build_config: BuildConfig::new(gctx, jobs, keep_going, &[], intent)?,
             cli_features: CliFeatures::new_all(false),
+            without_artifact_families: BTreeSet::new(),
             spec: ops::Packages::Packages(Vec::new()),
             filter: CompileFilter::Default {
                 required_features_filterable: false,
@@ -163,6 +167,22 @@ fn compile_ws<'a>(
     options: &CompileOptions,
     exec: &Arc<dyn Executor>,
 ) -> CargoResult<Compilation<'a>> {
+    let build_root = ws.build_dir();
+    let target_root = ws.target_dir();
+    let _build_variant_lock = build_root.open_ro_shared_create(
+        ".cargo-input-variants-lock",
+        ws.gctx(),
+        "retained input variants",
+    )?;
+    let _target_variant_lock = if target_root == build_root {
+        None
+    } else {
+        Some(target_root.open_ro_shared_create(
+            ".cargo-input-variants-lock",
+            ws.gctx(),
+            "retained input variants",
+        )?)
+    };
     let interner = UnitInterner::new();
     let logger = BuildLogger::maybe_new(ws, &options.build_config)?;
 
@@ -250,6 +270,7 @@ pub fn create_bcx<'a, 'gctx>(
         ref build_config,
         ref spec,
         ref cli_features,
+        ref without_artifact_families,
         ref filter,
         ref target_rustdoc_args,
         ref target_rustc_args,
@@ -289,6 +310,15 @@ pub fn create_bcx<'a, 'gctx>(
     let mut target_data = RustcTargetData::new(ws, &build_config.requested_kinds)?;
 
     let specs = spec.to_package_id_specs(ws)?;
+    let (effective_cli_features, artifact_families) =
+        crate::core::artifact_family::activate(
+            ws,
+            &specs,
+            cli_features,
+            build_config,
+            without_artifact_families,
+        )?;
+    let cli_features = &effective_cli_features;
     let has_dev_units = {
         // Rustdoc itself doesn't need dev-dependencies. But to scrape examples from packages in the
         // workspace, if any of those packages need dev-dependencies, then we need include dev-dependencies
@@ -326,6 +356,7 @@ pub fn create_bcx<'a, 'gctx>(
         has_dev_units,
         ForceAllTargets::No,
         dry_run,
+        &artifact_families,
     )?;
     let WorkspaceResolve {
         mut pkg_set,
@@ -333,6 +364,7 @@ pub fn create_bcx<'a, 'gctx>(
         targeted_resolve: resolve,
         specs_and_features,
     } = resolve;
+    crate::core::artifact_family::ensure_resolver_baselines(ws, &artifact_families, &resolve)?;
 
     if let Some(logger) = logger {
         let elapsed = ws.gctx().invocation_instant().elapsed().as_secs_f64();
@@ -536,6 +568,9 @@ pub fn create_bcx<'a, 'gctx>(
         build_config.compile_time_deps_only,
     );
 
+    let artifact_family_units =
+        crate::core::artifact_family::unit_membership(&artifact_families, &unit_graph)?;
+
     let units: Vec<_> = unit_graph.keys().sorted().collect();
     let unit_to_index: HashMap<_, _> = units
         .iter()
@@ -695,6 +730,8 @@ where `<compatible-ver>` is the latest version supporting rustc {rustc_version}"
         unit_graph,
         unit_to_index,
         scrape_units,
+        artifact_families,
+        artifact_family_units,
     )?;
 
     Ok(bcx)

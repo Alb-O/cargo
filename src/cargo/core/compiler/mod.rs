@@ -30,7 +30,7 @@
 
 pub mod artifact;
 mod build_config;
-mod build_env_variants;
+pub mod input_variants;
 pub(crate) mod build_context;
 pub(crate) mod build_runner;
 mod compilation;
@@ -295,6 +295,9 @@ fn rustc(
     exec: &Arc<dyn Executor>,
 ) -> CargoResult<Work> {
     let mut rustc = prepare_rustc(build_runner, unit)?;
+    if let Some(family) = build_runner.bcx.artifact_family(unit) {
+        crate::core::artifact_family::apply_environment(family, &mut rustc)?;
+    }
 
     let name = unit.pkg.name();
 
@@ -365,6 +368,7 @@ fn rustc(
         output_options.show_diagnostics = false;
     }
     let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
+    let input_variant = build_runner.files().input_variant(unit).cloned();
     return Ok(Work::new(move |state| {
         // Artifacts are in a different location than typical units,
         // hence we must assure the crate- and target-dependent
@@ -487,7 +491,7 @@ fn rustc(
         debug_assert_eq!(output_options.errors_seen, 0);
 
         if rustc_dep_info_loc.exists() {
-            fingerprint::translate_dep_info(
+            let observed_env = fingerprint::translate_dep_info(
                 &rustc_dep_info_loc,
                 &dep_info_loc,
                 &cwd,
@@ -504,6 +508,9 @@ fn rustc(
                     rustc_dep_info_loc.display()
                 ))
             })?;
+            if let Some(variant) = &input_variant {
+                variant.record_names(&observed_env, &env_config)?;
+            }
             // This mtime shift allows Cargo to detect if a source file was
             // modified in the middle of the build.
             paths::set_file_time_no_err(dep_info_loc, timestamp);
@@ -984,6 +991,9 @@ fn prepare_rustdoc(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> CargoResu
 /// Creates a unit of work invoking `rustdoc` for documenting the `unit`.
 fn rustdoc(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<Work> {
     let mut rustdoc = prepare_rustdoc(build_runner, unit)?;
+    if let Some(family) = build_runner.bcx.artifact_family(unit) {
+        crate::core::artifact_family::apply_environment(family, &mut rustdoc)?;
+    }
 
     let crate_name = unit.target.crate_name();
     let is_json_output = build_runner.bcx.build_config.intent.wants_doc_json_output();
@@ -1011,6 +1021,7 @@ fn rustdoc(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<W
     let fingerprint_dir = build_runner.files().fingerprint_dir(unit);
     let is_local = unit.is_local();
     let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
+    let input_variant = build_runner.files().input_variant(unit).cloned();
     let rustdoc_depinfo_enabled = build_runner.bcx.gctx.cli_unstable().rustdoc_depinfo;
 
     let mut output_options = OutputOptions::for_dirty(build_runner, unit);
@@ -1109,7 +1120,7 @@ fn rustdoc(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<W
         }
 
         if rustdoc_depinfo_enabled && rustdoc_dep_info_loc.exists() {
-            fingerprint::translate_dep_info(
+            let observed_env = fingerprint::translate_dep_info(
                 &rustdoc_dep_info_loc,
                 &dep_info_loc,
                 &cwd,
@@ -1126,6 +1137,9 @@ fn rustdoc(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<W
                     rustdoc_dep_info_loc.display()
                 ))
             })?;
+            if let Some(variant) = &input_variant {
+                variant.record_names(&observed_env, &env_config)?;
+            }
             // This mtime shift allows Cargo to detect if a source file was
             // modified in the middle of the build.
             paths::set_file_time_no_err(dep_info_loc, timestamp);

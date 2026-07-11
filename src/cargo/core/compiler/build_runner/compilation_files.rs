@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::debug;
 
 use super::{BuildContext, BuildRunner, CompileKind, FileFlavor, Layout};
-use crate::core::compiler::build_env_variants::BuildEnvVariant;
+use crate::core::compiler::input_variants::{InputSource, InputVariant};
 use crate::core::compiler::{CompileMode, CompileTarget, CrateType, FileType, Unit};
 use crate::core::{Target, TargetKind, Workspace};
 use crate::util::{self, CargoResult, OnceExt, StableHasher};
@@ -95,7 +95,7 @@ pub struct Metadata {
     c_metadata: UnitHash,
     c_extra_filename: bool,
     pkg_dir: bool,
-    build_env_affected: bool,
+    input_variant_affected: bool,
 }
 
 impl Metadata {
@@ -119,6 +119,10 @@ impl Metadata {
         self.pkg_dir.then_some(self.unit_id)
     }
 
+    pub fn input_variant_affected(&self) -> bool {
+        self.input_variant_affected
+    }
+
 }
 
 /// Collection of information about the files emitted by the compiler, and the
@@ -137,7 +141,7 @@ pub struct CompilationFiles<'a, 'gctx> {
     /// Metadata hash to use for each unit.
     metas: HashMap<Unit, Metadata>,
     /// Selected environment branch for each build-script execution unit.
-    build_env_variants: HashMap<Unit, BuildEnvVariant>,
+    input_variants: HashMap<Unit, InputVariant>,
     /// For each Unit, a list all files produced.
     outputs: HashMap<Unit, OnceCell<Arc<Vec<OutputFile>>>>,
 }
@@ -173,7 +177,7 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
         target: HashMap<CompileTarget, Layout>,
     ) -> CargoResult<CompilationFiles<'a, 'gctx>> {
         let mut metas = HashMap::default();
-        let mut build_env_variants = HashMap::default();
+        let mut input_variants = HashMap::default();
         let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
         for unit in &build_runner.bcx.roots {
             metadata_of(
@@ -183,7 +187,7 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
                 &target,
                 &env_config,
                 &mut metas,
-                &mut build_env_variants,
+                &mut input_variants,
             )?;
         }
         let outputs = metas
@@ -198,7 +202,7 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
             export_dir: build_runner.bcx.build_config.export_dir.clone(),
             roots: build_runner.bcx.roots.clone(),
             metas,
-            build_env_variants,
+            input_variants,
             outputs,
         })
     }
@@ -220,8 +224,8 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
         self.metas[unit]
     }
 
-    pub fn build_env_variant(&self, unit: &Unit) -> Option<&BuildEnvVariant> {
-        self.build_env_variants.get(unit)
+    pub fn input_variant(&self, unit: &Unit) -> Option<&InputVariant> {
+        self.input_variants.get(unit)
     }
 
     /// Gets the short hash based only on the `PackageId`.
@@ -335,9 +339,9 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
     pub fn incremental_dir(&self, unit: &Unit) -> PathBuf {
         let root = self.layout(unit.kind).build_dir().incremental();
         let metadata = self.metadata(unit);
-        if metadata.build_env_affected {
+        if metadata.input_variant_affected {
             root.join(format!(
-                "build-env-{}-{}",
+                "input-variant-{}-{}",
                 unit.target.crate_name(),
                 metadata.unit_id
             ))
@@ -734,7 +738,7 @@ fn metadata_of<'a>(
     targets: &HashMap<CompileTarget, Layout>,
     env_config: &Arc<HashMap<String, std::ffi::OsString>>,
     metas: &'a mut HashMap<Unit, Metadata>,
-    build_env_variants: &mut HashMap<Unit, BuildEnvVariant>,
+    input_variants: &mut HashMap<Unit, InputVariant>,
 ) -> CargoResult<&'a Metadata> {
     if !metas.contains_key(unit) {
         let meta = compute_metadata(
@@ -744,7 +748,7 @@ fn metadata_of<'a>(
             targets,
             env_config,
             metas,
-            build_env_variants,
+            input_variants,
         )?;
         metas.insert(unit.clone(), meta);
         for dep in build_runner.unit_deps(unit) {
@@ -755,7 +759,7 @@ fn metadata_of<'a>(
                 targets,
                 env_config,
                 metas,
-                build_env_variants,
+                input_variants,
             )?;
         }
     }
@@ -770,7 +774,7 @@ fn compute_metadata(
     targets: &HashMap<CompileTarget, Layout>,
     env_config: &Arc<HashMap<String, std::ffi::OsString>>,
     metas: &mut HashMap<Unit, Metadata>,
-    build_env_variants: &mut HashMap<Unit, BuildEnvVariant>,
+    input_variants: &mut HashMap<Unit, InputVariant>,
 ) -> CargoResult<Metadata> {
     let bcx = &build_runner.bcx;
     let deps_metadata = build_runner
@@ -784,7 +788,7 @@ fn compute_metadata(
                 targets,
                 env_config,
                 metas,
-                build_env_variants,
+                input_variants,
             )
             .copied()
         })
@@ -916,27 +920,37 @@ fn compute_metadata(
         }
     }
 
-    let mut build_env_affected = deps_metadata
+    let mut input_variant_affected = deps_metadata
         .iter()
-        .any(|metadata| metadata.build_env_affected);
-    if unit.mode.is_run_custom_build() {
-        let stable_unit_id = UnitHash(Hasher::finish(&unit_id_hasher));
-        let build_root = match unit.kind {
-            CompileKind::Host => host,
-            CompileKind::Target(target) => &targets[&target],
+        .any(|metadata| metadata.input_variant_affected);
+    if let Some(family) = bcx.artifact_family(unit) {
+        if unit.mode.is_run_custom_build() || bcx.is_artifact_family_root(unit) {
+            family.context_key.hash(&mut unit_id_hasher);
+            input_variant_affected = true;
         }
-        .build_dir()
-        .root();
-        let variant = BuildEnvVariant::select(
-            build_root,
-            unit.pkg.name().as_str(),
-            stable_unit_id,
-            env_config,
-        )?;
-        build_env_affected |= variant.is_branched();
-        variant.hash(&mut unit_id_hasher);
-        build_env_variants.insert(unit.clone(), variant);
     }
+    let stable_unit_id = UnitHash(Hasher::finish(&unit_id_hasher));
+    let build_root = match unit.kind {
+        CompileKind::Host => host,
+        CompileKind::Target(target) => &targets[&target],
+    }
+    .build_dir()
+    .root();
+    let source = if unit.mode.is_run_custom_build() {
+        InputSource::BuildScriptEnv
+    } else {
+        InputSource::RustcEnv
+    };
+    let variant = InputVariant::select(
+        build_root,
+        unit.pkg.name().as_str(),
+        stable_unit_id,
+        source,
+        env_config,
+    )?;
+    input_variant_affected |= variant.is_branched();
+    variant.hash(&mut unit_id_hasher);
+    input_variants.insert(unit.clone(), variant);
 
     let c_metadata = UnitHash(Hasher::finish(&c_metadata_hasher));
     let unit_id = UnitHash(Hasher::finish(&unit_id_hasher));
@@ -946,7 +960,7 @@ fn compute_metadata(
         c_metadata,
         c_extra_filename,
         pkg_dir,
-        build_env_affected,
+        input_variant_affected,
     })
 }
 
