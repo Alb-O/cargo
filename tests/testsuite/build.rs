@@ -6308,6 +6308,31 @@ fn build_script_o0_default_even_with_release() {
 }
 
 #[cargo_test]
+fn primary_codegen_backend_only_applies_to_primary_native_units() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "pub fn foo() { bar::bar(); }")
+        .file("bar/Cargo.toml", &basic_lib_manifest("bar"))
+        .file("bar/src/lib.rs", "pub fn bar() {}")
+        .build();
+
+    p.cargo(r#"build -v --config 'build.primary-codegen-backend="llvm"'"#)
+        .with_stderr_contains("[RUNNING] `rustc --crate-name foo [..]-Z codegen-backend=llvm[..]")
+        .with_stderr_does_not_contain("[RUNNING] `rustc --crate-name bar [..]codegen-backend[..]")
+        .run();
+}
+
+#[cargo_test]
 fn primary_package_env_var() {
     // Test that CARGO_PRIMARY_PACKAGE is enabled only for "foo" and not for any dependency.
 

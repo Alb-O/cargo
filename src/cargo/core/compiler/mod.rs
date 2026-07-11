@@ -1282,6 +1282,28 @@ fn build_base_args(
         hint_mostly_unused: profile_hint_mostly_unused,
         ..
     } = unit.profile.clone();
+    let native_target = match unit.kind {
+        CompileKind::Host => true,
+        CompileKind::Target(target) => target.rustc_target() == bcx.host_triple(),
+    };
+    let codegen_backend = if codegen_backend.is_some()
+        || !build_runner.is_primary_package(unit)
+        || unit.mode.is_any_test()
+        || !native_target
+        || bcx
+            .gctx
+            .get_env_os("RUSTC_WORKSPACE_WRAPPER")
+            .and_then(|wrapper| Path::new(wrapper).file_stem())
+            == Some(OsStr::new("clippy-driver"))
+    {
+        codegen_backend
+    } else {
+        bcx.gctx
+            .build_config()?
+            .primary_codegen_backend
+            .as_deref()
+            .map(InternedString::from)
+    };
     let hints = unit.pkg.hints().cloned().unwrap_or_default();
     let test = unit.mode.is_any_test();
 

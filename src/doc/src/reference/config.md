@@ -1152,9 +1152,18 @@ See the [resolver](resolver.md#rust-version) chapter for more details.
 > - `allow` is supported on any version
 > - `fallback` is respected as of 1.84
 
-### `[artifact-family]` (Harbour fork)
+### `build.primary-codegen-backend` (fork extension)
 
-The Harbour Cargo fork accepts named artifact families for heavy dependency subgraphs shared by independent workspaces.
+The `build.primary-codegen-backend` setting selects a codegen backend for primary packages compiled for the native target. Explicit profile settings take precedence, and tests and Clippy retain their normal backend.
+
+```toml
+[build]
+primary-codegen-backend = "cranelift"
+```
+
+### `[artifact-family]` (fork extension)
+
+This Cargo fork accepts named artifact families for heavy dependency subgraphs shared by independent workspaces.
 
 ```toml
 [artifact-family.example]
