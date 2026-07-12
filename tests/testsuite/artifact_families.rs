@@ -197,6 +197,10 @@ fn inactive_optional_trigger_does_not_activate_the_family() {
                 version = "0.1.0"
                 edition = "2024"
 
+                [patch.crates-io]
+                anchor = { path = "anchor" }
+                unrelated = { path = "unrelated" }
+
                 [features]
                 use-trigger = ["dep:trigger"]
 
@@ -221,8 +225,35 @@ fn inactive_optional_trigger_does_not_activate_the_family() {
             "#,
         )
         .file("trigger/src/lib.rs", "pub fn value() {}")
+        .file(
+            "anchor/Cargo.toml",
+            r#"
+                [package]
+                name = "anchor"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("anchor/src/lib.rs", "pub fn value() {}")
+        .file(
+            "unrelated/Cargo.toml",
+            r#"
+                [package]
+                name = "unrelated"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("unrelated/src/lib.rs", "pub fn value() {}")
         .build();
 
-    p.cargo("check").run();
+    p.cargo("check")
+        .with_stderr_does_not_contain(
+            "[WARNING] patch `anchor v0.1.0 ([ROOT]/foo/anchor)` was not used in the crate graph",
+        )
+        .with_stderr_contains(
+            "[WARNING] patch `unrelated v0.1.0 ([ROOT]/foo/unrelated)` was not used in the crate graph",
+        )
+        .run();
     assert!(!p.root().join(".cargo/baseline/Cargo.lock").exists());
 }

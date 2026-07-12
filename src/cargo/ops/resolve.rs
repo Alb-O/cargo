@@ -875,14 +875,10 @@ fn emit_warnings_of_unused_patches(
         .map(|(_, family)| family.scope_package)
         .collect::<HashSet<_>>();
     for unused in resolve.unused_patches().iter() {
-        // An inactive family leaves its ordinary root patch marked unused,
-        // while an active open member can resolve the same path package
-        // without consuming the patch registration itself.
-        if family_scope_packages.contains(unused.name().as_str())
-            && resolve
-                .iter()
-                .any(|id| id.name() == unused.name() && id.version() == unused.version())
-        {
+        // Family anchors are ordinary root patches that remain dormant when
+        // their family is inactive. Active open members can also resolve the
+        // same path package without consuming its patch registration.
+        if family_scope_packages.contains(unused.name().as_str()) {
             continue;
         }
         // Show alternative source URLs if the source URLs being patched
