@@ -356,7 +356,6 @@ pub fn create_bcx<'a, 'gctx>(
         has_dev_units,
         ForceAllTargets::No,
         dry_run,
-        &artifact_families,
     )?;
     let WorkspaceResolve {
         mut pkg_set,
@@ -364,8 +363,6 @@ pub fn create_bcx<'a, 'gctx>(
         targeted_resolve: resolve,
         specs_and_features,
     } = resolve;
-    crate::core::artifact_family::ensure_resolver_baselines(ws, &artifact_families, &resolve)?;
-
     if let Some(logger) = logger {
         let elapsed = ws.gctx().invocation_instant().elapsed().as_secs_f64();
         logger.log(LogMessage::ResolutionFinished { elapsed });

@@ -1163,7 +1163,7 @@ primary-codegen-backend = "cranelift"
 
 ### `[artifact-family]` (fork extension)
 
-This Cargo fork accepts named artifact families for heavy dependency subgraphs shared by independent workspaces.
+This Cargo fork accepts named artifact families for heavy dependency subgraphs shared by workspace members or compatible workspaces.
 
 ```toml
 [artifact-family.example]
@@ -1172,14 +1172,10 @@ scope-package = "engine_dylib"
 activate-dependency-features = ["engine/dynamic_linking"]
 profiles = ["dev", "test"]
 host-target-only = true
-resolver-baseline = "/var/cache/cargo/example/Cargo.lock"
 environment-manifest = "/nix/store/hash-example-environment.json"
-
-[artifact-family.example.patch.crates-io.engine_dylib]
-path = "/source/shared-engine-dylib"
 ```
 
-Cargo activates a family when a selected package has an active direct trigger dependency and the requested profile and target match. It applies the dependency features and patch, retains a resolver baseline separately from the workspace lockfile, and executes the scope package's dependency closure using the versioned JSON environment manifest.
+Cargo activates a family when a selected package has an active direct trigger dependency and the requested profile and target match. It applies the dependency features and executes the scope package's dependency closure using the versioned JSON environment manifest. The workspace manifest and lockfile remain responsible for resolving the scope package and its dependency versions.
 
 Pass `--without-artifact-family <name>` to a compile command to disable one configured family for that invocation.
 

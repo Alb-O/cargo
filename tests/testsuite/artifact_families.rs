@@ -3,8 +3,23 @@
 use crate::prelude::*;
 use cargo_test_support::project;
 
+fn family_dylib_count(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root.join("target/debug/deps"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.contains("anchor-")
+                && [".dll", ".dylib", ".so"]
+                    .iter()
+                    .any(|extension| name.ends_with(extension))
+        })
+        .count()
+}
+
 #[cargo_test]
-fn activates_dependency_feature_and_creates_a_separate_baseline() {
+fn activates_dependency_feature_in_a_canonical_environment() {
     let p = project()
         .file(
             ".cargo/config.toml",
@@ -15,7 +30,6 @@ fn activates_dependency_feature_and_creates_a_separate_baseline() {
                 activate-dependency-features = ["trigger/family"]
                 profiles = ["dev"]
                 host-target-only = true
-                resolver-baseline = ".cargo/baseline/Cargo.lock"
                 environment-manifest = ".cargo/family-environment.json"
             "#,
         )
@@ -85,6 +99,9 @@ fn activates_dependency_feature_and_creates_a_separate_baseline() {
                 version = "0.1.0"
                 edition = "2024"
                 build = "build.rs"
+
+                [lib]
+                crate-type = ["dylib"]
             "#,
         )
         .file(
@@ -108,11 +125,40 @@ fn activates_dependency_feature_and_creates_a_separate_baseline() {
         .env("FAMILY_CANONICAL", "ambient-one")
         .with_stdout_contains("canonical:ambient-one")
         .run();
-    assert!(p.root().join(".cargo/baseline/Cargo.lock").is_file());
-
+    assert_eq!(family_dylib_count(&p.root()), 1);
     p.cargo("run -vv -p app")
         .env("FAMILY_CANONICAL", "ambient-two")
         .with_stdout_contains("canonical:ambient-two")
+        .with_stderr_contains("[FRESH] anchor v0.1.0 ([ROOT]/foo/anchor)")
+        .run();
+
+    std::fs::write(
+        p.root().join(".cargo/family-environment.json"),
+        r#"{
+            "version": 1,
+            "clear_inherited": false,
+            "set": { "FAMILY_CANONICAL": "canonical-two" }
+        }"#,
+    )
+    .unwrap();
+    p.cargo("run -p app")
+        .env("FAMILY_CANONICAL", "ambient-three")
+        .with_stdout_contains("canonical-two:ambient-three")
+        .run();
+    assert_eq!(family_dylib_count(&p.root()), 2);
+
+    std::fs::write(
+        p.root().join(".cargo/family-environment.json"),
+        r#"{
+            "version": 1,
+            "clear_inherited": false,
+            "set": { "FAMILY_CANONICAL": "canonical" }
+        }"#,
+    )
+    .unwrap();
+    p.cargo("run -vv -p app")
+        .env("FAMILY_CANONICAL", "ambient-four")
+        .with_stdout_contains("canonical:ambient-four")
         .with_stderr_contains("[FRESH] anchor v0.1.0 ([ROOT]/foo/anchor)")
         .run();
 
@@ -125,7 +171,7 @@ fn activates_dependency_feature_and_creates_a_separate_baseline() {
 }
 
 #[cargo_test]
-fn inactive_optional_trigger_does_not_apply_the_family_patch() {
+fn inactive_optional_trigger_does_not_activate_the_family() {
     let p = project()
         .file(
             ".cargo/config.toml",
@@ -136,11 +182,7 @@ fn inactive_optional_trigger_does_not_apply_the_family_patch() {
                 activate-dependency-features = ["trigger/family"]
                 profiles = ["dev"]
                 host-target-only = true
-                resolver-baseline = ".cargo/baseline/Cargo.lock"
                 environment-manifest = ".cargo/family-environment.json"
-
-                [artifact-family.demo.patch.crates-io.anchor]
-                path = "missing-anchor"
             "#,
         )
         .file(

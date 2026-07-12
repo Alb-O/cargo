@@ -9,31 +9,24 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
 use serde::Deserialize;
-use cargo_util::paths;
-use cargo_util_schemas::lockfile::TomlLockfile;
-
 use crate::core::compiler::unit_graph::UnitGraph;
 use crate::core::compiler::{BuildConfig, CompileKind, Unit};
 use crate::core::resolver::features::CliFeatures;
-use crate::core::resolver::encode::into_resolve;
-use crate::core::{FeatureValue, Package, PackageId, PackageIdSpec, Resolve, Workspace};
+use crate::core::{FeatureValue, Package, PackageIdSpec, Workspace};
 use crate::util::context::CargoArtifactFamilyConfig;
-use crate::util::{CargoResult, Filesystem, StableHasher};
-use crate::util::data_structures::{HashMap, HashSet};
-use crate::util::Graph;
+use crate::util::{CargoResult, StableHasher};
+use crate::util::data_structures::HashMap;
 use cargo_util::ProcessBuilder;
 
 #[derive(Clone, Debug)]
 pub struct ArtifactFamily {
     pub name: String,
-    pub trigger_dependency: String,
     pub scope_package: String,
-    pub resolver_baseline: PathBuf,
     pub environment: ArtifactEnvironment,
     pub context_key: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct ArtifactEnvironment {
     pub version: u32,
     #[serde(default)]
@@ -133,13 +126,11 @@ pub fn activate(
         config.trigger_dependency.hash(&mut hasher);
         config.scope_package.hash(&mut hasher);
         config.activate_dependency_features.hash(&mut hasher);
-        environment_bytes.hash(&mut hasher);
+        environment.hash(&mut hasher);
         let context_key = Hasher::finish(&hasher);
         families.push(ArtifactFamily {
             name,
-            trigger_dependency: config.trigger_dependency,
             scope_package: config.scope_package,
-            resolver_baseline: config.resolver_baseline.resolve_path(ws.gctx()),
             environment,
             context_key,
         });
@@ -183,9 +174,6 @@ fn optional_dependency_enabled(
 fn validate_config(name: &str, config: &CargoArtifactFamilyConfig) -> CargoResult<()> {
     if config.trigger_dependency.is_empty() || config.scope_package.is_empty() {
         bail!("artifact family `{name}` requires nonempty trigger-dependency and scope-package");
-    }
-    if !config.resolver_baseline.raw_value().ends_with("Cargo.lock") {
-        bail!("artifact family `{name}` resolver-baseline must end in `Cargo.lock`");
     }
     for feature in &config.activate_dependency_features {
         let Some((dependency, feature_name)) = feature.split_once('/') else {
@@ -284,130 +272,4 @@ pub fn input_environment(
             .map(|(name, value)| (name.clone(), OsString::from(value))),
     );
     Ok((Arc::new(values), !family.environment.clear_inherited))
-}
-
-pub fn load_resolver_baselines(
-    ws: &Workspace<'_>,
-    families: &[ArtifactFamily],
-) -> CargoResult<Vec<(String, Resolve)>> {
-    families
-        .iter()
-        .filter(|family| family.resolver_baseline.exists())
-        .map(|family| {
-            let contents = fs::read_to_string(&family.resolver_baseline).with_context(|| {
-                format!(
-                    "failed to read artifact family `{}` baseline `{}`",
-                    family.name,
-                    family.resolver_baseline.display()
-                )
-            })?;
-            let lockfile: TomlLockfile = toml::from_str(&contents).with_context(|| {
-                format!(
-                    "failed to parse artifact family `{}` baseline `{}`",
-                    family.name,
-                    family.resolver_baseline.display()
-                )
-            })?;
-            let resolve = into_resolve(lockfile, &contents, ws)?;
-            Ok((family.name.clone(), resolve))
-        })
-        .collect()
-}
-
-pub fn ensure_resolver_baselines(
-    ws: &Workspace<'_>,
-    families: &[ArtifactFamily],
-    resolve: &Resolve,
-) -> CargoResult<()> {
-    for family in families {
-        if family.resolver_baseline.exists() {
-            continue;
-        }
-        let parent = family
-            .resolver_baseline
-            .parent()
-            .expect("resolver baseline has a parent");
-        paths::create_dir_all(parent)?;
-        let lock_root = Filesystem::new(parent.to_path_buf());
-        let _lock = lock_root.open_rw_exclusive_create(
-            ".artifact-family-baseline.lock",
-            ws.gctx(),
-            "artifact family resolver baseline",
-        )?;
-        if family.resolver_baseline.exists() {
-            continue;
-        }
-        let family_resolve = resolver_closure(resolve, family)?;
-        let contents = crate::ops::resolve_to_string(ws, &family_resolve)?;
-        paths::write_atomic(&family.resolver_baseline, contents)?;
-    }
-    Ok(())
-}
-
-fn resolver_closure(resolve: &Resolve, family: &ArtifactFamily) -> CargoResult<Resolve> {
-    let roots = resolve
-        .iter()
-        .filter(|id| id.name().as_str() == family.scope_package)
-        .collect::<Vec<_>>();
-    if roots.len() != 1 {
-        bail!(
-            "artifact family `{}` expected exactly one resolved `{}` package, found {}",
-            family.name,
-            family.scope_package,
-            roots.len()
-        );
-    }
-
-    let mut members = HashSet::default();
-    let mut pending = roots;
-    while let Some(id) = pending.pop() {
-        if !members.insert(id) {
-            continue;
-        }
-        pending.extend(resolve.deps(id).map(|(dependency, _)| dependency));
-    }
-
-    let mut graph = Graph::<PackageId, HashSet<crate::core::Dependency>>::new();
-    for id in &members {
-        graph.add(*id);
-    }
-    for id in &members {
-        for (dependency, edges) in resolve.deps_not_replaced(*id) {
-            if members.contains(&dependency) {
-                *graph.link(*id, dependency) = edges.clone();
-            }
-        }
-    }
-
-    let replacements = resolve
-        .replacements()
-        .iter()
-        .filter(|(from, to)| members.contains(from) && members.contains(to))
-        .map(|(from, to)| (*from, *to))
-        .collect();
-    let features = members
-        .iter()
-        .map(|id| (*id, resolve.features(*id).to_vec()))
-        .collect();
-    let checksums = resolve
-        .checksums()
-        .iter()
-        .filter(|(id, _)| members.contains(id))
-        .map(|(id, checksum)| (*id, checksum.clone()))
-        .collect();
-    let summaries = members
-        .iter()
-        .map(|id| (*id, resolve.summary(*id).clone()))
-        .collect();
-
-    Ok(Resolve::new(
-        graph,
-        replacements,
-        features,
-        checksums,
-        resolve.metadata().clone(),
-        Vec::new(),
-        resolve.version(),
-        summaries,
-    ))
 }

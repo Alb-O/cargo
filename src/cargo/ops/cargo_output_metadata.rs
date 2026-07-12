@@ -165,7 +165,6 @@ fn build_resolve_graph(
         HasDevUnits::Yes,
         force_all,
         dry_run,
-        &[],
     )?;
 
     let package_map: BTreeMap<PackageId, Package> = ws_resolve

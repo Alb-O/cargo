@@ -99,7 +99,6 @@ pub fn resolve_std<'gctx>(
         HasDevUnits::No,
         crate::core::resolver::features::ForceAllTargets::No,
         dry_run,
-        &[],
     )?;
     debug_assert_eq!(resolve.specs_and_features.len(), 1);
     Ok((

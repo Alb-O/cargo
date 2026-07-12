@@ -27,7 +27,6 @@ use crate::ops::lockfile::LOCKFILE_NAME;
 use crate::sources::{CRATES_IO_INDEX, CRATES_IO_REGISTRY, PathSource, SourceConfigMap};
 use crate::util::context;
 use crate::util::context::{FeatureUnification, Value};
-use crate::util::context::CargoArtifactFamilyConfig;
 use crate::util::edit_distance;
 use crate::util::errors::{CargoResult, ManifestError};
 use crate::util::interning::InternedString;
@@ -40,9 +39,7 @@ use crate::util::{
 use cargo_util::paths;
 use cargo_util::paths::normalize_path;
 use cargo_util_schemas::manifest::RustVersion;
-use cargo_util_schemas::manifest::{
-    TomlDependency, TomlDetailedDependency, TomlManifest, TomlProfiles,
-};
+use cargo_util_schemas::manifest::{TomlDependency, TomlManifest, TomlProfiles};
 use pathdiff::diff_paths;
 
 /// The core abstraction in Cargo for working with a workspace of crates.
@@ -540,10 +537,7 @@ impl<'gctx> Workspace<'gctx> {
         }
     }
 
-    fn config_patch(
-        &self,
-        active_artifact_families: &BTreeSet<String>,
-    ) -> CargoResult<HashMap<Url, Vec<Patch>>> {
+    fn config_patch(&self) -> CargoResult<HashMap<Url, Vec<Patch>>> {
         let config_patch: Option<
             BTreeMap<String, BTreeMap<String, Value<TomlDependency<ConfigRelativePath>>>>,
         > = self.gctx.get("patch")?;
@@ -584,49 +578,6 @@ impl<'gctx> Workspace<'gctx> {
             );
         }
 
-        let artifact_families: Option<BTreeMap<String, CargoArtifactFamilyConfig>> =
-            self.gctx.get("artifact-family")?;
-        for family in artifact_families
-            .into_iter()
-            .flatten()
-            .filter(|(name, _)| active_artifact_families.contains(name))
-            .map(|(_, family)| family)
-        {
-            for (url, dependencies) in family.patch {
-                let url = match &url[..] {
-                    CRATES_IO_REGISTRY => CRATES_IO_INDEX.parse().unwrap(),
-                    url => self
-                        .gctx
-                        .get_registry_index(url)
-                        .or_else(|_| url.into_url())
-                        .with_context(|| {
-                            format!("artifact-family patch entry `{url}` should be a URL or registry name")
-                        })?,
-                };
-                let entries = patch.entry(url).or_default();
-                for (name, family_patch) in dependencies {
-                    let dependency = TomlDependency::Detailed(TomlDetailedDependency {
-                        path: Some(family_patch.path.clone()),
-                        ..Default::default()
-                    });
-                    let dep = crate::util::toml::config_patch_to_dependency(
-                        &dependency,
-                        &name,
-                        source,
-                        self.gctx,
-                        &mut warnings,
-                    )?;
-                    entries.retain(|existing| existing.dep.name_in_toml().as_str() != name);
-                    entries.push(Patch {
-                        dep,
-                        loc: PatchLocation::Config(
-                            family_patch.path.value().definition.clone(),
-                        ),
-                    });
-                }
-            }
-        }
-
         for message in warnings {
             self.gctx
                 .shell()
@@ -640,19 +591,12 @@ impl<'gctx> Workspace<'gctx> {
     ///
     /// This may be from a virtual crate or an actual crate.
     pub fn root_patch(&self) -> CargoResult<HashMap<Url, Vec<Patch>>> {
-        self.root_patch_for_artifact_families(&BTreeSet::new())
-    }
-
-    pub fn root_patch_for_artifact_families(
-        &self,
-        active_artifact_families: &BTreeSet<String>,
-    ) -> CargoResult<HashMap<Url, Vec<Patch>>> {
         let from_manifest = match self.root_maybe() {
             MaybePackage::Package(p) => p.manifest().patch(),
             MaybePackage::Virtual(vm) => vm.patch(),
         };
 
-        let from_config = self.config_patch(active_artifact_families)?;
+        let from_config = self.config_patch()?;
         if from_config.is_empty() {
             return Ok(from_manifest.clone());
         }

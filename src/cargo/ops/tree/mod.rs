@@ -173,7 +173,6 @@ pub fn build_and_print(ws: &Workspace<'_>, opts: &TreeOptions) -> CargoResult<()
         has_dev,
         force_all,
         dry_run,
-        &[],
     )?;
 
     let package_map: HashMap<PackageId, &Package> = ws_resolve

@@ -1437,7 +1437,6 @@ fn get_packages() -> CargoResult<Vec<Package>> {
         has_dev_units,
         force_all_targets,
         dry_run,
-        &[],
     )?;
 
     let packages = ws_resolve

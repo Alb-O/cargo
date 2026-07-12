@@ -928,6 +928,9 @@ fn compute_metadata(
             family.context_key.hash(&mut unit_id_hasher);
             input_variant_affected = true;
         }
+        if bcx.is_artifact_family_root(unit) {
+            family.context_key.hash(&mut c_metadata_hasher);
+        }
     }
     let stable_unit_id = UnitHash(Hasher::finish(&unit_id_hasher));
     let build_root = match unit.kind {
@@ -1026,10 +1029,18 @@ fn hash_rustc_version(bcx: &BuildContext<'_, '_>, hasher: &mut StableHasher, uni
 }
 
 /// Returns whether or not this unit should use a hash in the filename to make it unique.
+fn is_artifact_family_dynamic_library(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
+    bcx.is_artifact_family_root(unit)
+        && (unit.target.is_dylib() || unit.target.is_cdylib())
+}
+
 fn use_extra_filename(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
     if unit.mode.is_doc_test() || unit.mode.is_doc() {
         // Doc tests do not have metadata.
         return false;
+    }
+    if is_artifact_family_dynamic_library(bcx, unit) {
+        return true;
     }
     if bcx.gctx.cli_unstable().build_dir_new_layout {
         if unit.mode.is_any_test() || unit.mode.is_check() {
@@ -1103,6 +1114,9 @@ fn use_pkg_dir(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
     if unit.mode.is_doc_test() || unit.mode.is_doc() {
         // Doc tests do not have metadata.
         return false;
+    }
+    if is_artifact_family_dynamic_library(bcx, unit) {
+        return true;
     }
     if bcx.gctx.cli_unstable().build_dir_new_layout {
         // These always use metadata.
