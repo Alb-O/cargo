@@ -488,12 +488,17 @@ fn open_membership_attaches_the_invoked_child() {
 "#]])
         .run();
 
-    p.cargo("locate-project --workspace --message-format plain")
+    p.cargo(
+        "locate-project --workspace --message-format plain --manifest-path Cargo.toml",
+    )
         .cwd("dynamic")
         .with_stdout_data(str![[r#"
-[ROOT]/foo/Cargo.toml
+[ROOT]/foo/dynamic/Cargo.toml
 
 "#]])
+        .run();
+
+    p.cargo("metadata --format-version 1 --manifest-path dynamic/Cargo.toml")
         .run();
 
     assert!(p.root().join("Cargo.lock").is_file());

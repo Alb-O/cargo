@@ -2071,6 +2071,26 @@ impl WorkspaceRootConfig {
             || self.accepts_open_member(manifest_path)
     }
 
+    /// Returns the manifest that preserves this workspace invocation.
+    ///
+    /// An open member cannot be reconstructed from the non-enumerating root
+    /// manifest, so workspace consumers must keep the invoked manifest.
+    fn manifest_for_invocation(
+        &self,
+        manifest_path: &Path,
+        root_manifest: &Path,
+    ) -> Option<PathBuf> {
+        if self.accepts_open_member(manifest_path)
+            && !self.is_explicitly_listed_member(manifest_path)
+        {
+            Some(manifest_path.to_path_buf())
+        } else if self.accepts_member(manifest_path) {
+            Some(root_manifest.to_path_buf())
+        } else {
+            None
+        }
+    }
+
     fn has_members_list(&self) -> bool {
         self.members.is_some()
     }
@@ -2206,11 +2226,11 @@ pub fn find_workspace_root(
     })
 }
 
-/// Finds the workspace root for a manifest, with minimal verification.
+/// Finds the workspace manifest for an invocation, with minimal verification.
 ///
-/// This is similar to `find_workspace_root`, but additionally verifies that the
-/// workspace accepts the package through enumerated or open membership.
-pub fn find_workspace_root_with_membership_check(
+/// Enumerated members resolve to the root manifest. Dynamically attached open
+/// members retain the invoked manifest because the root does not enumerate them.
+pub fn find_workspace_manifest_with_membership_check(
     manifest_path: &Path,
     gctx: &GlobalContext,
 ) -> CargoResult<Option<PathBuf>> {
@@ -2235,27 +2255,27 @@ pub fn find_workspace_root_with_membership_check(
             let ws_source_id = SourceId::for_manifest_path(&ws_manifest_path)?;
             let ws_manifest = read_manifest(&ws_manifest_path, ws_source_id, gctx)?;
 
-            // Verify the workspace includes this package in its members
             if let WorkspaceConfig::Root(ref root_config) = *ws_manifest.workspace_config() {
-                if root_config.accepts_member(manifest_path) {
-                    return Ok(Some(ws_manifest_path));
-                }
+                return Ok(root_config.manifest_for_invocation(manifest_path, &ws_manifest_path));
             }
             // Workspace doesn't agree with the pointer - not a valid workspace root
             Ok(None)
         }
         WorkspaceConfig::Member { root: None } => {
-            // No explicit pointer, walk up with membership validation
-            find_workspace_root_with_loader(manifest_path, gctx, |candidate_manifest_path| {
-                let source_id = SourceId::for_manifest_path(candidate_manifest_path)?;
-                let manifest = read_manifest(candidate_manifest_path, source_id, gctx)?;
+            // The general root lookup can use a cached root without running
+            // membership validation, so inspect each candidate directly.
+            for candidate_manifest_path in find_root_iter(manifest_path, gctx) {
+                let source_id = SourceId::for_manifest_path(&candidate_manifest_path)?;
+                let manifest = read_manifest(&candidate_manifest_path, source_id, gctx)?;
                 if let WorkspaceConfig::Root(ref root_config) = *manifest.workspace_config() {
-                    if root_config.accepts_member(manifest_path) {
-                        return Ok(Some(candidate_manifest_path.to_path_buf()));
+                    if let Some(workspace_manifest) = root_config
+                        .manifest_for_invocation(manifest_path, &candidate_manifest_path)
+                    {
+                        return Ok(Some(workspace_manifest));
                     }
                 }
-                Ok(None)
-            })
+            }
+            Ok(None)
         }
     }
 }

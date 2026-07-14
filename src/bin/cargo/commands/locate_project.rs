@@ -37,10 +37,10 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         WhatToFind::Workspace => {
             root_manifest = args.root_manifest(gctx)?;
             // Try the membership-only fast path before loading the full workspace.
-            if let Some(ws_root) =
-                cargo::core::find_workspace_root_with_membership_check(&root_manifest, gctx)?
+            if let Some(ws_manifest) =
+                cargo::core::find_workspace_manifest_with_membership_check(&root_manifest, gctx)?
             {
-                workspace_root = ws_root;
+                workspace_root = ws_manifest;
                 &workspace_root
             } else {
                 // Fallback to full workspace loading for path dependency membership.

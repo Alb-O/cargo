@@ -19,6 +19,8 @@ the workspace root, is output. This can be overridden by the `--workspace` flag.
 workspace is found by traversing further upward or by using the field `package.workspace` after
 locating the manifest of a workspace member.
 
+For a dynamically attached [open workspace member](../reference/workspaces.html#the-open-membership-field), `--workspace` reports the member manifest because the workspace root does not enumerate it. Commands passed that manifest still use the shared workspace root, lockfile, and output directories.
+
 ## OPTIONS
 
 <dl>
