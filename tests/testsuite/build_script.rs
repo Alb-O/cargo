@@ -1,6 +1,7 @@
 //! Tests for build.rs scripts.
 
 use std::env;
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::fs;
 use std::io;
 use std::thread;
@@ -17,6 +18,7 @@ use cargo_test_support::registry::Package;
 use cargo_test_support::str;
 use cargo_test_support::{basic_manifest, cross_compile, is_coarse_mtime, project, project_in};
 use cargo_test_support::{git, rustc_host, sleep_ms, slow_cpu_multiplier, symlink_supported};
+use cargo_util::paths::dylib_path_envvar;
 use cargo_util::paths::{self, remove_dir_all};
 
 #[cargo_test]
@@ -1032,6 +1034,208 @@ fn target_runner_does_not_apply_to_build_script() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_runner_build_script_with_target() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                [target.{target}]
+                runner = "nonexistent-runner"
+                [target.'cfg(all())']
+                runner = "nonexistent-cfg-runner"
+                "#,
+            ),
+        )
+        .file("build.rs", "fn main() {}")
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("check -v --target")
+        .arg(&target)
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name build_script_build [..]`
+[RUNNING] `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build`
+[RUNNING] `rustc --crate-name foo [..]`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_cfg_runner_build_script_with_host_config_and_target() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            r#"
+            [target.'cfg(all())']
+            runner = "nonexistent-cfg-runner"
+            "#,
+        )
+        .file("build.rs", "fn main() {}")
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("check -v -Ztarget-applies-to-host -Zhost-config --target")
+        .arg(&target)
+        .masquerade_as_nightly_cargo(&["target-applies-to-host", "host-config"])
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name build_script_build [..]`
+[RUNNING] `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build`
+[RUNNING] `rustc --crate-name foo [..]`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn host_runner_build_script_without_target() {
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            r#"
+            [host]
+            runner = "nonexistent-host-runner"
+            "#,
+        )
+        .file("build.rs", "fn main() {}")
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("check -Ztarget-applies-to-host -Zhost-config")
+        .masquerade_as_nightly_cargo(&["target-applies-to-host", "host-config"])
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[ERROR] failed to run custom build command for `foo v0.0.1 ([ROOT]/foo)`
+
+Caused by:
+  could not execute process `nonexistent-host-runner [ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build` (never executed)
+
+Caused by:
+  [NOT_FOUND]
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_cfg_linker_build_script() {
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            r#"
+            [target.'cfg(all())']
+            linker = "/path/to/cfg/linker"
+            "#,
+        )
+        .file("build.rs", "fn main() {}")
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build -v")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name build_script_build [..]--crate-type bin [..]-C linker=[..]/path/to/cfg/linker [..]`
+[ERROR] linker `[..]/path/to/cfg/linker` not found
+...
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_cfg_linker_build_script_with_target() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            r#"
+            [target.'cfg(all())']
+            linker = "/path/to/cfg/linker"
+            "#,
+        )
+        .file("build.rs", "fn main() {}")
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build -v --target")
+        .arg(&target)
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name build_script_build [..]--crate-type bin [..]-C linker=[..]/path/to/cfg/linker [..]`
+[ERROR] linker `[..]/path/to/cfg/linker` not found
+...
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_linker_build_script_with_target() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                [target.{target}]
+                linker = "/path/to/target/linker"
+                "#,
+            ),
+        )
+        .file("build.rs", "fn main() {}")
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build -v --target")
+        .arg(&target)
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name build_script_build [..]--crate-type bin [..]-C linker=[..]/path/to/target/linker [..]`
+[ERROR] linker `[..]/path/to/target/linker` not found
+...
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_cfg_linker_build_script_with_host_config_and_target() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            r#"
+            [target.'cfg(all())']
+            linker = "/path/to/cfg/linker"
+            "#,
+        )
+        .file("build.rs", "fn main() {}")
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build -v -Ztarget-applies-to-host -Zhost-config --target")
+        .arg(&target)
+        .masquerade_as_nightly_cargo(&["target-applies-to-host", "host-config"])
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name build_script_build [..]--crate-type bin [..]`
+[RUNNING] `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build`
+[RUNNING] `rustc --crate-name foo [..]-C linker=[..]/path/to/cfg/linker [..]`
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -6868,5 +7072,102 @@ fn target_linker_does_not_apply_to_build_script_with_host_config() {
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
 
 "#]])
+        .run();
+}
+
+#[cargo_test(
+    nightly,
+    reason = "Depends on https://github.com/rust-lang/rust/pull/155439/changes/61f3e086acc1c187bb262ab43cac71f44018c397"
+)]
+fn build_script_dylib_search_path_excludes_target_dylibs() {
+    if cross_compile_disabled() {
+        return;
+    }
+
+    let envvar = dylib_path_envvar();
+    let target = cross_compile::alternate();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.0"
+                edition = "2021"
+                authors = []
+
+                [dependencies]
+                bar = { path = "bar" }
+
+                [build-dependencies]
+                hostbar = { path = "hostbar" }
+            "#,
+        )
+        .file(
+            "build.rs",
+            &format!(
+                r#"
+                    fn main() {{
+                        let search_path = std::env::var_os("{envvar}").unwrap();
+                        let paths: Vec<_> = std::env::split_paths(&search_path).collect();
+
+                        let found_hostbar = paths.iter()
+                            .any(|dir| dir.join("{DLL_PREFIX}hostbar{DLL_SUFFIX}").exists());
+                        assert!(
+                            found_hostbar,
+                            "hostbar (host-arch build-dependency dylib) should be on \
+                             the build script's search path, but wasn't: {{:?}}",
+                            paths
+                        );
+
+                        let found_bar = paths.iter()
+                            .any(|dir| dir.join("{DLL_PREFIX}bar{DLL_SUFFIX}").exists());
+                        assert!(
+                            !found_bar,
+                            "bar ({target}-arch regular dependency dylib) must NOT be on \
+                             the host build script's search path, but was: {{:?}}",
+                            paths
+                        );
+                    }}
+                "#
+            ),
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.1.0"
+                edition = "2021"
+                authors = []
+                [lib]
+                crate-type = ["dylib"]
+            "#,
+        )
+        .file("bar/src/lib.rs", "pub fn bar_value() -> i32 { 100 }")
+        .file(
+            "hostbar/Cargo.toml",
+            r#"
+                [package]
+                name = "hostbar"
+                version = "0.1.0"
+                edition = "2021"
+                authors = []
+                [lib]
+                crate-type = ["dylib"]
+            "#,
+        )
+        .file(
+            "hostbar/src/lib.rs",
+            "pub fn hostbar_value() -> i32 { 200 }",
+        )
+        .build();
+
+    p.cargo("build -Zbuild-dir-new-layout -v --target")
+        .arg(&target)
+        .masquerade_as_nightly_cargo(&["new build-dir layout"])
+        .enable_mac_dsym()
         .run();
 }

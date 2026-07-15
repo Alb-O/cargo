@@ -625,7 +625,7 @@ impl TargetInfo {
             }
         }
         if !result.is_empty() {
-            if gctx.cli_unstable().no_embed_metadata
+            if !gctx.should_embed_metadata()
                 && crate_types
                     .iter()
                     .any(|ct| ct.benefits_from_no_embed_metadata())
@@ -909,7 +909,7 @@ fn rustflags_from_build(gctx: &GlobalContext, flag: Flags) -> CargoResult<Option
 }
 
 /// Whether a host artifact must take its configuration solely from `[host]` and ignore `[target]`.
-pub(crate) fn host_artifact_uses_only_host_config(
+fn host_artifact_uses_only_host_config(
     gctx: &GlobalContext,
     requested_kinds: &[CompileKind],
     kind: CompileKind,
