@@ -621,19 +621,39 @@ fn fine_grain_builds_share_variants_and_artifact_destinations() {
             "src/main.rs",
             r#"fn main() { println!("{}", env!("BRANCH_VALUE")); }"#,
         )
-        .file("ready-A", "")
-        .file("ready-B", "")
         .file("trigger", "initial")
         .file("input-A", "")
         .file("input-B", "")
         .build();
 
-    for branch in ["A", "B"] {
-        p.cargo("-Zfine-grain-locking build")
-            .masquerade_as_nightly_cargo(&["fine-grain-locking"])
-            .env("BRANCH", branch)
-            .run();
-    }
+    let mut a = p.cargo("-Zfine-grain-locking run");
+    a.masquerade_as_nightly_cargo(&["fine-grain-locking"])
+        .env("BRANCH", "A");
+    let mut a = a.build_command();
+    a.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut b = p.cargo("-Zfine-grain-locking run");
+    b.masquerade_as_nightly_cargo(&["fine-grain-locking"])
+        .env("BRANCH", "B");
+    let mut b = b.build_command();
+    b.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let a = a.spawn().unwrap();
+    let b = b.spawn().unwrap();
+    retry(100, || {
+        (p.root().join("started-A").exists() || p.root().join("started-B").exists())
+            .then_some(())
+    });
+    sleep_ms(200);
+    fs::write(p.root().join("ready-A"), "").unwrap();
+    fs::write(p.root().join("ready-B"), "").unwrap();
+
+    let a = a.wait_with_output().unwrap();
+    let b = b.wait_with_output().unwrap();
+    execs().run_output(&a);
+    execs().run_output(&b);
+    assert_eq!(str::from_utf8(&a.stdout).unwrap().trim(), "A");
+    assert_eq!(str::from_utf8(&b.stdout).unwrap().trim(), "B");
 
     fs::remove_file(p.root().join("ready-A")).unwrap();
     fs::remove_file(p.root().join("ready-B")).unwrap();
@@ -680,11 +700,12 @@ fn fine_grain_builds_share_variants_and_artifact_destinations() {
     assert!(dep_info.contains(&format!("input-{published_branch}")));
 
     for branch in ["A", "B"] {
-        p.cargo("-Zfine-grain-locking run")
+        p.cargo("-Zfine-grain-locking run -v")
             .masquerade_as_nightly_cargo(&["fine-grain-locking"])
             .env("BRANCH", branch)
             .with_stdout_contains(branch)
             .with_stderr_does_not_contain("[COMPILING]")
+            .with_stderr_does_not_contain("[RUNNING] `rustc [..]")
             .run();
     }
 
@@ -721,6 +742,76 @@ fn fine_grain_builds_share_variants_and_artifact_destinations() {
     assert_eq!(str::from_utf8(&published.stdout).unwrap().trim(), "A");
     let dep_info = fs::read_to_string(p.root().join("target/debug/foo.d")).unwrap();
     assert!(dep_info.contains("input-A"));
+}
+
+#[cargo_test]
+fn fine_grain_serializes_input_schema_expansion() {
+    let p = project()
+        .file("Cargo.toml", &basic_manifest("foo", "0.0.0"))
+        .file(
+            "build.rs",
+            r#"
+                fn main() {
+                    println!("cargo::rerun-if-changed=trigger");
+                    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+                    std::fs::write(root.join("started"), "").unwrap();
+                    while !root.join("ready").exists() {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+            "#,
+        )
+        .file("src/main.rs", "mod expanded; fn main() { println!(\"{}\", expanded::value()); }")
+        .file("src/expanded.rs", "pub fn value() -> &'static str { \"base\" }")
+        .file("trigger", "initial")
+        .file("ready", "")
+        .build();
+
+    let mut initial = p.cargo("-Zfine-grain-locking run");
+    initial.masquerade_as_nightly_cargo(&["fine-grain-locking"]);
+    initial.with_stdout_data("base\n").run();
+
+    fs::remove_file(p.root().join("ready")).unwrap();
+    fs::remove_file(p.root().join("started")).unwrap();
+    p.change_file("trigger", "expand the schema");
+    p.change_file(
+        "src/expanded.rs",
+        r#"pub fn value() -> &'static str { env!("EXPANDED") }"#,
+    );
+
+    let mut a = p.cargo("-Zfine-grain-locking run");
+    a.masquerade_as_nightly_cargo(&["fine-grain-locking"])
+        .env("EXPANDED", "A");
+    let mut a = a.build_command();
+    a.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut b = p.cargo("-Zfine-grain-locking run");
+    b.masquerade_as_nightly_cargo(&["fine-grain-locking"])
+        .env("EXPANDED", "B");
+    let mut b = b.build_command();
+    b.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let a = a.spawn().unwrap();
+    let b = b.spawn().unwrap();
+    retry(100, || p.root().join("started").exists().then_some(()));
+    sleep_ms(200);
+    fs::write(p.root().join("ready"), "").unwrap();
+
+    let a = a.wait_with_output().unwrap();
+    let b = b.wait_with_output().unwrap();
+    execs().run_output(&a);
+    execs().run_output(&b);
+    assert_eq!(str::from_utf8(&a.stdout).unwrap().trim(), "A");
+    assert_eq!(str::from_utf8(&b.stdout).unwrap().trim(), "B");
+
+    for expanded in ["A", "B"] {
+        p.cargo("-Zfine-grain-locking run -v")
+            .masquerade_as_nightly_cargo(&["fine-grain-locking"])
+            .env("EXPANDED", expanded)
+            .with_stdout_data(format!("{expanded}\n"))
+            .with_stderr_does_not_contain("[RUNNING] `rustc [..]")
+            .run();
+    }
 }
 
 #[cargo_test]

@@ -176,11 +176,11 @@ fn compile_ws<'a>(
             "fine-grained build locking is not supported with process-scoped Solaris locks"
         );
     }
+    paths::create_dir_all_excluded_from_backups_atomic(build_root.as_path_unlocked())?;
+    if target_root != build_root {
+        paths::create_dir_all_excluded_from_backups_atomic(target_root.as_path_unlocked())?;
+    }
     if fine_grain_locking {
-        paths::create_dir_all_excluded_from_backups_atomic(build_root.as_path_unlocked())?;
-        if target_root != build_root {
-            paths::create_dir_all_excluded_from_backups_atomic(target_root.as_path_unlocked())?;
-        }
         let build_root_on_nfs =
             crate::util::flock::is_on_nfs_mount(build_root.as_path_unlocked());
         let target_root_on_nfs = target_root != build_root

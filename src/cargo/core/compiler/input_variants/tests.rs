@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::util::data_structures::HashMap;
 
-use super::{EncodedValue, encode_value, variable_values, variant_key};
+use super::{EncodedValue, FORMAT_VERSION, encode_value, variable_values, variant_key};
 use super::{VariantRecord, load_records};
 
 #[test]
@@ -51,7 +51,7 @@ fn non_utf8_values_have_stable_keys() {
 fn schema_generation_makes_old_records_ineligible() {
     let root = tempfile::tempdir().unwrap();
     let old = VariantRecord {
-        version: 1,
+        version: FORMAT_VERSION,
         generation: 0,
         key: 1,
         values: Vec::new(),

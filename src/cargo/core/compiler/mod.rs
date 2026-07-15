@@ -472,7 +472,7 @@ fn rustc(
         debug_assert_eq!(output_options.errors_seen, 0);
 
         if rustc_dep_info_loc.exists() {
-            let observed_env = fingerprint::translate_dep_info(
+            let (observed_env, observed_paths) = fingerprint::translate_dep_info(
                 &rustc_dep_info_loc,
                 &dep_info_loc,
                 &cwd,
@@ -490,7 +490,7 @@ fn rustc(
                 ))
             })?;
             if let Some(variant) = &input_variant {
-                variant.record_names(&observed_env)?;
+                variant.record_names(&observed_env, &observed_paths)?;
             }
             // This mtime shift allows Cargo to detect if a source file was
             // modified in the middle of the build.
@@ -1102,7 +1102,7 @@ fn rustdoc(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<W
         }
 
         if rustdoc_depinfo_enabled && rustdoc_dep_info_loc.exists() {
-            let observed_env = fingerprint::translate_dep_info(
+            let (observed_env, observed_paths) = fingerprint::translate_dep_info(
                 &rustdoc_dep_info_loc,
                 &dep_info_loc,
                 &cwd,
@@ -1120,7 +1120,7 @@ fn rustdoc(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<W
                 ))
             })?;
             if let Some(variant) = &input_variant {
-                variant.record_names(&observed_env)?;
+                variant.record_names(&observed_env, &observed_paths)?;
             }
             // This mtime shift allows Cargo to detect if a source file was
             // modified in the middle of the build.

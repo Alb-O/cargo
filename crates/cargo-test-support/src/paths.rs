@@ -389,7 +389,7 @@ fn build_dir_ignored_path_patterns() -> Vec<String> {
         "[..].pdb",
         // Internal concurrency coordination does not affect artifact layout.
         "[..]/.cargo-artifact-locks/v1/[..]",
-        "[..]/.input-variants/v1/locks/[..]",
+        "[..]/.input-variants/v1/[..]",
         "[..]/fingerprint/[..].generation",
         "[..]/.fingerprint/[..].generation",
         "[..]/.cargo-input-variants-lock",

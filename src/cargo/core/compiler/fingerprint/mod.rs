@@ -515,6 +515,7 @@ pub(crate) struct FingerprintRecheck {
     observed_generation: Option<Vec<u8>>,
     mtime_on_use: bool,
     force: bool,
+    allow_concurrent_winner: bool,
 }
 
 pub(crate) fn recheck_target(
@@ -545,8 +546,14 @@ pub(crate) fn recheck_target(
             reason: DirtyReason::FreshBuild,
         },
     };
+    if let FingerprintComparison::Dirty { reason } = &comparison {
+        debug!(
+            "lock-time fingerprint dirty for {}/{:?}/{:?}: {reason:?}",
+            unit.pkg, unit.mode, unit.target,
+        );
+    }
     let generation_path = loc.with_extension("generation");
-    let winner_matches = !recheck.force
+    let winner_matches = (!recheck.force || recheck.allow_concurrent_winner)
         && matches!(comparison, FingerprintComparison::Dirty { .. })
         && paths::read_bytes(&generation_path).ok() != recheck.observed_generation
         && paths::read(&loc).is_ok_and(|hash| hash == util::to_hex(fingerprint.hash_u64()));
@@ -586,6 +593,13 @@ pub fn prepare_target(
     unit: &Unit,
     force: bool,
 ) -> CargoResult<PreparedTarget> {
+    let refresh_inputs = build_runner.bcx.gctx.cli_unstable().fine_grain_locking
+        && build_runner
+            .files()
+            .input_variant(unit)
+            .is_some_and(super::input_variants::InputVariant::needs_refresh);
+    let allow_concurrent_winner = refresh_inputs && !force;
+    let force = force || refresh_inputs;
     let bcx = build_runner.bcx;
     let loc = build_runner.files().fingerprint_file_path(unit, "");
     let generation_path = loc.with_extension("generation");
@@ -722,7 +736,7 @@ pub fn prepare_target(
             }
 
             if let Some(variant) = input_variant {
-                variant.record_names(&output.rerun_if_env_changed)?;
+                variant.record_names(&output.rerun_if_env_changed, &output.rerun_if_changed)?;
             }
 
             write_fingerprint(&write_loc, &write_fingerprint_value)?;
@@ -759,6 +773,7 @@ pub fn prepare_target(
             observed_generation,
             mtime_on_use,
             force,
+            allow_concurrent_winner,
         },
         freshness: dirty_reason.map_or(Freshness::Fresh, Freshness::Dirty),
         fresh,
@@ -2015,7 +2030,7 @@ fn build_script_local_fingerprints(
     assert!(unit.mode.is_run_custom_build());
     // First up, if this build script is entirely overridden, then we just
     // return the hash of what we overrode it with. This is the easy case!
-    if let Some(fingerprint) = build_script_override_fingerprint(build_runner, unit) {
+    if let Some(fingerprint) = build_script_override_fingerprint(unit) {
         debug!("override local fingerprints deps {}", unit.pkg);
         return Ok((
             Box::new(
@@ -2086,15 +2101,10 @@ fn build_script_local_fingerprints(
 /// Create a [`LocalFingerprint`] for an overridden build script.
 /// Returns None if it is not overridden.
 fn build_script_override_fingerprint(
-    build_runner: &mut BuildRunner<'_, '_>,
     unit: &Unit,
 ) -> Option<LocalFingerprint> {
-    // Build script output is only populated at this stage when it is
-    // overridden.
-    let build_script_outputs = build_runner.build_script_outputs.lock().unwrap();
-    let metadata = build_runner.get_run_build_script_metadata(unit);
-    // Returns None if it is not overridden.
-    let output = build_script_outputs.get(metadata)?;
+    let links = unit.pkg.manifest().links()?;
+    let output = unit.links_overrides.get(links)?;
     let s = format!(
         "overridden build state with hash: {}",
         util::hash_u64(output)
