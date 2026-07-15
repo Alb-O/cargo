@@ -12,6 +12,7 @@ use crate::util::CargoResult;
 pub struct Job {
     work: Work,
     fresh: Freshness,
+    run_in_background: bool,
 }
 
 /// The basic unit of work.
@@ -51,19 +52,31 @@ impl Work {
 }
 
 impl Job {
+    fn new(work: Work, fresh: Freshness) -> Job {
+        let run_in_background = fresh.is_dirty();
+        Job {
+            work,
+            fresh,
+            run_in_background,
+        }
+    }
+
     /// Creates a new job that does nothing.
     pub fn new_fresh() -> Job {
-        Job {
-            work: Work::noop(),
-            fresh: Freshness::Fresh,
-        }
+        Job::new(Work::noop(), Freshness::Fresh)
     }
 
     /// Creates a new job representing a unit of work.
     pub fn new_dirty(work: Work, dirty_reason: DirtyReason) -> Job {
+        Job::new(work, Freshness::Dirty(dirty_reason))
+    }
+
+    /// Creates a job that must run on a worker even if it was planned fresh.
+    pub fn new_background(work: Work, fresh: Freshness) -> Job {
         Job {
             work,
-            fresh: Freshness::Dirty(dirty_reason),
+            fresh,
+            run_in_background: true,
         }
     }
 
@@ -80,17 +93,16 @@ impl Job {
         &self.fresh
     }
 
+    pub fn should_run_in_background(&self) -> bool {
+        self.run_in_background
+    }
+
     /// Chains the given work by putting it in front of our own unit of work.
     pub fn before(&mut self, next: Work) {
         let prev = mem::replace(&mut self.work, Work::noop());
         self.work = next.then(prev);
     }
 
-    /// Chains the given work by putting it after of our own unit of work.
-    pub fn after(&mut self, next: Work) {
-        let prev = mem::replace(&mut self.work, Work::noop());
-        self.work = prev.then(next);
-    }
 }
 
 impl fmt::Debug for Job {

@@ -61,6 +61,8 @@ pub struct UnitOutput {
     pub unit: Unit,
     /// Path to the unit's primary output (an executable or cdylib).
     pub path: PathBuf,
+    /// User-facing filename used when installing the output.
+    pub target_filename: OsString,
     /// The script metadata, if this unit's package has a build script.
     ///
     /// This is used for indexing [`Compilation::extra_env`].

@@ -2,7 +2,7 @@
 
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fs;
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,7 +13,8 @@ use cargo_util::paths;
 use serde::{Deserialize, Serialize};
 
 use crate::util::data_structures::HashMap;
-use crate::util::{CargoResult, StableHasher};
+use crate::util::flock;
+use crate::util::{CargoResult, GlobalContext, StableHasher};
 
 use super::UnitHash;
 
@@ -47,6 +48,7 @@ pub struct InputVariant {
     stable_unit_id: UnitHash,
     schema_path: PathBuf,
     records_dir: PathBuf,
+    schema_lock: Option<PathBuf>,
     env_config: Arc<HashMap<String, OsString>>,
     inherit_process_env: bool,
 }
@@ -86,6 +88,7 @@ impl InputVariant {
         source: InputSource,
         env_config: &Arc<HashMap<String, OsString>>,
         inherit_process_env: bool,
+        gctx: &GlobalContext,
     ) -> CargoResult<Self> {
         let registry_root = build_root.join(".input-variants").join("v1");
         let relative = Path::new(source.directory())
@@ -95,11 +98,28 @@ impl InputVariant {
             .join("schemas")
             .join(&relative)
             .with_extension("json");
-        let records_dir = registry_root.join("records").join(relative);
+        let records_dir = registry_root.join("records").join(&relative);
+        let lock_path = relative.with_extension("lock");
+        let schema_lock = if flock::is_on_nfs_mount(build_root) {
+            if gctx.cli_unstable().fine_grain_locking {
+                anyhow::bail!(
+                    "fine-grained build locking is not supported on NFS build directories"
+                );
+            }
+            None
+        } else {
+            Some(registry_root.join("locks").join(lock_path))
+        };
+        let _schema_lock_guard = schema_lock
+            .as_ref()
+            .map(SchemaLockGuard::new)
+            .transpose()?;
         let schema = load_schema(&schema_path, source, stable_unit_id)?;
-        let records = load_records(&records_dir, schema.as_ref().map(|schema| schema.generation))?;
-
-        if let Some(mut record) = records.into_iter().find(|record| {
+        let records = load_records(
+            &records_dir,
+            schema.as_ref().map(|schema| schema.generation),
+        )?;
+        let key = if let Some(mut record) = records.into_iter().find(|record| {
             record.values
                 == variable_values(
                     record.values.iter().map(|(name, _)| name),
@@ -109,22 +129,14 @@ impl InputVariant {
         }) {
             record.last_used = now();
             write_record(&records_dir, &record)?;
-            return Ok(Self {
-                key: record.key,
-                source,
-                stable_unit_id,
-                schema_path,
-                records_dir,
-                env_config: Arc::clone(env_config),
-                inherit_process_env,
-            });
-        }
-
-        let names = schema.map(|schema| schema.names).unwrap_or_default();
-        let key = if names.is_empty() {
-            0
+            record.key
         } else {
-            variant_key(&variable_values(names.iter(), env_config, inherit_process_env))
+            let names = schema.map(|schema| schema.names).unwrap_or_default();
+            if names.is_empty() {
+                0
+            } else {
+                variant_key(&variable_values(names.iter(), env_config, inherit_process_env))
+            }
         };
 
         Ok(Self {
@@ -133,6 +145,7 @@ impl InputVariant {
             stable_unit_id,
             schema_path,
             records_dir,
+            schema_lock,
             env_config: Arc::clone(env_config),
             inherit_process_env,
         })
@@ -153,6 +166,11 @@ impl InputVariant {
         &self,
         names: &[String],
     ) -> CargoResult<()> {
+        let _lock = self
+            .schema_lock
+            .as_ref()
+            .map(SchemaLockGuard::new)
+            .transpose()?;
         let mut names = names.to_vec();
         names.sort();
         names.dedup();
@@ -212,6 +230,24 @@ impl InputVariant {
             last_used: timestamp,
         };
         write_record(&self.records_dir, &record)
+    }
+}
+
+struct SchemaLockGuard(File);
+
+impl SchemaLockGuard {
+    fn new(path: &PathBuf) -> CargoResult<Self> {
+        let file = flock::open_lock_file(path)?;
+        flock::lock_exclusive(&file)?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for SchemaLockGuard {
+    fn drop(&mut self) {
+        if let Err(error) = flock::unlock(&self.0) {
+            tracing::warn!("failed to release input variant schema lock: {error}");
+        }
     }
 }
 

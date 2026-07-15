@@ -607,6 +607,42 @@ pub fn link_or_copy(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()> 
     _link_or_copy(src, dst)
 }
 
+/// Hardlinks or copies through a temporary sibling before replacing `dst`.
+///
+/// Replacement is atomic on platforms that permit `rename` over an existing
+/// file. Callers must still coordinate writers for the Windows fallback.
+pub fn link_or_copy_atomic(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+    if same_file::is_same_file(src, dst).unwrap_or(false) {
+        return Ok(());
+    }
+
+    let parent = dst.parent().unwrap();
+    create_dir_all(parent)?;
+    let tempdir = TempFileBuilder::new()
+        .prefix(".cargo-publish")
+        .tempdir_in(parent)?;
+    let staged = tempdir.path().join(dst.file_name().unwrap());
+    _link_or_copy(src, &staged)?;
+
+    match fs::rename(&staged, dst) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
+            ) && fs::symlink_metadata(dst).is_ok() =>
+        {
+            remove_file(dst)?;
+            fs::rename(&staged, dst)
+                .with_context(|| format!("failed to publish `{}`", dst.display()))
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to publish `{}`", dst.display())),
+    }
+}
+
 fn _link_or_copy(src: &Path, dst: &Path) -> Result<()> {
     tracing::debug!("linking {} to {}", src.display(), dst.display());
     if same_file::is_same_file(src, dst).unwrap_or(false) {
@@ -884,6 +920,7 @@ fn exclude_from_time_machine_and_cloud_sync(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::join_paths;
+    use super::link_or_copy_atomic;
     use super::normalize_path;
     use super::write;
     use super::write_atomic;
@@ -940,6 +977,19 @@ mod tests {
         write_atomic(&path, original_contents).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         assert_eq!(contents, original_contents);
+    }
+
+    #[test]
+    fn link_or_copy_atomic_replaces_destination() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let source = tmpdir.path().join("source");
+        let destination = tmpdir.path().join("destination");
+        write(&source, "new").unwrap();
+        write(&destination, "old").unwrap();
+
+        link_or_copy_atomic(&source, &destination).unwrap();
+
+        assert_eq!(std::fs::read_to_string(destination).unwrap(), "new");
     }
 
     #[test]

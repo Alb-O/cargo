@@ -3,6 +3,7 @@
 use cargo::util::data_structures::HashMap;
 
 use std::fs;
+use std::process::Stdio;
 use std::str;
 
 use crate::prelude::*;
@@ -11,7 +12,7 @@ use cargo_test_support::git;
 use cargo_test_support::paths;
 use cargo_test_support::registry::{Package, cksum};
 use cargo_test_support::str;
-use cargo_test_support::{ProjectBuilder, basic_manifest, project, t};
+use cargo_test_support::{ProjectBuilder, basic_manifest, project, retry, t};
 use serde::Serialize;
 
 fn setup() {
@@ -485,6 +486,94 @@ directory sources are not intended to be edited, if modifications are required t
 
 "#]])
         .run();
+}
+
+#[cargo_test]
+fn fine_grain_recheck_verifies_directory_source() {
+    setup();
+
+    VendorPackage::new("blocker")
+        .file("Cargo.toml", &basic_manifest("blocker", "0.1.0"))
+        .file("src/lib.rs", "pub fn blocker() {}")
+        .file(
+            "build.rs",
+            r#"
+                fn main() {
+                    println!("cargo::rerun-if-env-changed=BLOCK_RECHECK");
+                    if std::env::var_os("BLOCK_RECHECK").is_none() {
+                        return;
+                    }
+                    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap();
+                    std::fs::write(root.join("blocker-started"), "").unwrap();
+                    while !root.join("blocker-ready").exists() {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+            "#,
+        )
+        .build();
+    VendorPackage::new("bar")
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.1.0"
+                edition = "2024"
+                [dependencies]
+                blocker = "0.1.0"
+            "#,
+        )
+        .file("src/lib.rs", "pub fn bar() { blocker::blocker(); }")
+        .build();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+                [dependencies]
+                bar = "0.1.0"
+            "#,
+        )
+        .file("src/lib.rs", "pub fn foo() { bar::bar(); }")
+        .build();
+    let mut initial = p.cargo("-Zfine-grain-locking build");
+    initial
+        .masquerade_as_nightly_cargo(&["fine-grain-locking"])
+        .run();
+
+    let mut waiting = p.cargo("-Zfine-grain-locking build -j1");
+    waiting
+        .masquerade_as_nightly_cargo(&["fine-grain-locking"])
+        .env("BLOCK_RECHECK", "1");
+    let mut waiting = waiting.build_command();
+    waiting.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let waiting = waiting.spawn().unwrap();
+    retry(200, || {
+        paths::root().join("blocker-started").exists().then_some(())
+    });
+
+    fs::write(
+        paths::root().join("index/bar/src/lib.rs"),
+        "pub fn bar() { blocker::blocker(); /* corrupt */ }",
+    )
+    .unwrap();
+    fs::write(paths::root().join("blocker-ready"), "").unwrap();
+    let output = waiting.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the listed checksum") && stderr.contains("has changed"),
+        "unexpected stderr:\n{stderr}"
+    );
 }
 
 #[cargo_test]

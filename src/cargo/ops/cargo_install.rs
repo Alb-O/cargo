@@ -410,12 +410,18 @@ impl<'gctx> InstallablePackage<'gctx> {
         let mut binaries: Vec<(&str, &Path)> = compile
             .binaries
             .iter()
-            .map(|UnitOutput { path, .. }| {
-                let name = path.file_name().unwrap();
-                if let Some(s) = name.to_str() {
+            .map(|UnitOutput {
+                path,
+                target_filename,
+                ..
+            }| {
+                if let Some(s) = target_filename.to_str() {
                     Ok((s, path.as_ref()))
                 } else {
-                    bail!("Binary `{:?}` name can't be serialized into string", name)
+                    bail!(
+                        "Binary `{:?}` name can't be serialized into string",
+                        target_filename
+                    )
                 }
             })
             .collect::<CargoResult<_>>()?;

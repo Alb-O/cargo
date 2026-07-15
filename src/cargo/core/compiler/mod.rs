@@ -99,7 +99,6 @@ use self::output_sbom::build_sbom;
 use self::unit_graph::UnitDep;
 
 use crate::core::compiler::future_incompat::FutureIncompatReport;
-use crate::core::compiler::locking::LockKey;
 use crate::core::compiler::timings::SectionTiming;
 pub use crate::core::compiler::unit::Unit;
 pub use crate::core::compiler::unit::UnitIndex;
@@ -193,12 +192,6 @@ fn compile<'gctx>(
         return Ok(());
     }
 
-    let lock = if build_runner.bcx.gctx.cli_unstable().fine_grain_locking {
-        Some(build_runner.lock_manager.lock_shared(build_runner, unit)?)
-    } else {
-        None
-    };
-
     // If we are in `--compile-time-deps` and the given unit is not a compile time
     // dependency, skip compiling the unit and jumps to dependencies, which still
     // have chances to be compile time dependencies
@@ -206,56 +199,44 @@ fn compile<'gctx>(
         // Build up the work to be done to compile this unit, enqueuing it once
         // we've got everything constructed.
         fingerprint::prepare_init(build_runner, unit)?;
+        let job_dependencies = build_runner.job_dependencies(unit);
 
         let job = if unit.mode.is_run_custom_build() {
-            custom_build::prepare(build_runner, unit)?
+            custom_build::prepare(build_runner, unit, &job_dependencies)?
         } else if unit.mode.is_doc_test() {
             // We run these targets later, so this is just a no-op for now.
             Job::new_fresh()
         } else {
             let force = exec.force_rebuild(unit) || force_rebuild;
-            let mut job = fingerprint::prepare_target(build_runner, unit, force)?;
-            job.before(if job.freshness().is_dirty() {
-                let work = if unit.mode.is_doc() || unit.mode.is_doc_scrape() {
-                    rustdoc(build_runner, unit)?
-                } else {
-                    rustc(build_runner, unit, exec)?
-                };
-                work.then(link_targets(build_runner, unit, false)?)
+            let prepared = fingerprint::prepare_target(build_runner, unit, force)?;
+            let dirty = if unit.mode.is_doc() || unit.mode.is_doc_scrape() {
+                rustdoc(build_runner, unit)?
             } else {
-                let output_options = OutputOptions::for_fresh(build_runner, unit);
-                let manifest = ManifestErrorContext::new(build_runner, unit);
-                let work = replay_output_cache(
-                    unit.pkg.package_id(),
-                    manifest,
-                    &unit.target,
-                    build_runner.files().message_cache_path(unit),
-                    output_options,
-                );
-                // Need to link targets on both the dirty and fresh.
-                work.then(link_targets(build_runner, unit, true)?)
-            });
-
-            // If -Zfine-grain-locking is enabled, we wrap the job with an upgrade to exclusive
-            // lock before starting, then downgrade to a shared lock after the job is finished.
-            if build_runner.bcx.gctx.cli_unstable().fine_grain_locking && job.freshness().is_dirty()
-            {
-                if let Some(lock) = lock {
-                    // Here we unlock the current shared lock to avoid deadlocking with other cargo
-                    // processes. Then we configure our compile job to take an exclusive lock
-                    // before starting. Once we are done compiling (including both rmeta and rlib)
-                    // we downgrade to a shared lock to allow other cargo's to read the build unit.
-                    // We will hold this shared lock for the remainder of compilation to prevent
-                    // other cargo from re-compiling while we are still using the unit.
-                    build_runner.lock_manager.unlock(&lock)?;
-                    job.before(prebuild_lock_exclusive(lock.clone()));
-                    job.after(downgrade_lock_to_shared(lock));
-                }
+                rustc(build_runner, unit, exec)?
             }
+            .then(link_targets(build_runner, unit, false)?);
+            let output_options = OutputOptions::for_fresh(build_runner, unit);
+            let manifest = ManifestErrorContext::new(build_runner, unit);
+            let fresh = replay_output_cache(
+                unit.pkg.package_id(),
+                manifest,
+                &unit.target,
+                build_runner.files().message_cache_path(unit),
+                output_options,
+            )
+            .then(link_targets(build_runner, unit, true)?);
 
-            job
+            if build_runner.bcx.gctx.cli_unstable().fine_grain_locking {
+                let locks =
+                    build_runner
+                        .lock_manager
+                        .prepare(build_runner, unit, &job_dependencies);
+                prepared.finish_locked(locks, dirty, fresh)
+            } else {
+                prepared.finish(dirty, fresh)?
+            }
         };
-        jobs.enqueue(build_runner, unit, job)?;
+        jobs.enqueue(unit, job, job_dependencies);
     }
 
     // Be sure to compile all dependencies of this target as well.
@@ -621,20 +602,6 @@ fn verbose_if_simple_exit_code(err: Error) -> Error {
     }
 }
 
-fn prebuild_lock_exclusive(lock: LockKey) -> Work {
-    Work::new(move |state| {
-        state.lock_exclusive(&lock)?;
-        Ok(())
-    })
-}
-
-fn downgrade_lock_to_shared(lock: LockKey) -> Work {
-    Work::new(move |state| {
-        state.downgrade_to_shared(&lock)?;
-        Ok(())
-    })
-}
-
 /// Link the compiled target (often of form `foo-{metadata_hash}`) to the
 /// final target. This must happen during both "Fresh" and "Compile".
 fn link_targets(
@@ -652,6 +619,17 @@ fn link_targets(
     let features = unit.features.iter().map(|s| s.to_string()).collect();
     let json_messages = bcx.build_config.emit_json();
     let executable = build_runner.get_executable(unit)?;
+    let publication_locks = bcx.gctx.cli_unstable().fine_grain_locking.then(|| {
+        build_runner.lock_manager.prepare_artifact_publication(
+            build_runner,
+            outputs.iter().flat_map(|output| {
+                output
+                    .hardlink
+                    .iter()
+                    .chain(output.export_path.iter())
+            }),
+        )
+    });
     let mut target = Target::clone(&unit.target);
     if let TargetSourcePath::Metabuild = target.src_path() {
         // Give it something to serialize.
@@ -663,6 +641,10 @@ fn link_targets(
     }
 
     Ok(Work::new(move |state| {
+        let _publication_lease = publication_locks
+            .as_ref()
+            .map(|locks| locks.acquire())
+            .transpose()?;
         // If we're a "root crate", e.g., the target of this compilation, then we
         // hard link our outputs out of the `deps` directory into the directory
         // above. This means that `cargo build` will produce binaries in
@@ -680,12 +662,12 @@ fn link_targets(
                 continue;
             };
             destinations.push(dst.clone());
-            paths::link_or_copy(src, dst)?;
+            paths::link_or_copy_atomic(src, dst)?;
             if let Some(ref path) = output.export_path {
                 let export_dir = export_dir.as_ref().unwrap();
                 paths::create_dir_all(export_dir)?;
 
-                paths::link_or_copy(src, path)?;
+                paths::link_or_copy_atomic(src, path)?;
             }
         }
 
@@ -2474,7 +2456,7 @@ fn on_stderr_line_inner(
         trace!("found directive from rustc: `{}`", artifact.artifact);
         if artifact.artifact.ends_with(".rmeta") {
             debug!("looks like metadata finished early!");
-            state.rmeta_produced();
+            state.rmeta_produced()?;
         }
         return Ok(false);
     }

@@ -335,6 +335,15 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
             .join(".lock")
     }
 
+    /// The metadata lock location for a given build unit.
+    pub fn build_unit_metadata_lock(&self, unit: &Unit) -> PathBuf {
+        let dir = self.pkg_dir(unit);
+        self.layout(unit.kind)
+            .build_dir()
+            .build_unit(&dir)
+            .join(".rmeta-lock")
+    }
+
     /// Directory where incremental output for the given unit should go.
     pub fn incremental_dir(&self, unit: &Unit) -> PathBuf {
         let root = self.layout(unit.kind).build_dir().incremental();
@@ -955,6 +964,7 @@ fn compute_metadata(
         source,
         &variant_env,
         inherit_process_env,
+        bcx.gctx,
     )?;
     input_variant_affected |= variant.is_branched();
     variant.hash(&mut unit_id_hasher);

@@ -187,13 +187,13 @@ fn clean_specs(
     let target_data = RustcTargetData::new(ws, &requested_kinds)?;
     let (pkg_set, resolve) = ops::resolve_ws(ws, dry_run)?;
     let prof_dir_name = profiles.get_dir_name();
-    let host_layout = Layout::new(ws, None, &prof_dir_name, true, true)?;
+    let host_layout = Layout::new(ws, None, &prof_dir_name, true, true, true)?;
     // Convert requested kinds to a Vec of layouts.
     let target_layouts: Vec<(CompileKind, Layout)> = requested_kinds
         .into_iter()
         .filter_map(|kind| match kind {
             CompileKind::Target(target) => {
-                match Layout::new(ws, Some(target), &prof_dir_name, true, true) {
+                match Layout::new(ws, Some(target), &prof_dir_name, true, true, true) {
                     Ok(layout) => Some(Ok((kind, layout))),
                     Err(e) => Some(Err(e)),
                 }
@@ -448,6 +448,7 @@ fn clean_input_variants(
     for source in ["build-script-env", "rustc-env"] {
         clean_ctx.rm_rf(&root.join("schemas").join(source).join(package))?;
         clean_ctx.rm_rf(&root.join("records").join(source).join(package))?;
+        clean_ctx.rm_rf(&root.join("locks").join(source).join(package))?;
     }
     clean_ctx.rm_rf(&root.join("outputs").join(package))
 }

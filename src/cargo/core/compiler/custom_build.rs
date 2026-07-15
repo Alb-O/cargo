@@ -34,7 +34,7 @@
 use super::{BuildRunner, Job, Unit, Work, fingerprint, get_dynamic_search_path};
 use crate::core::compiler::CompileMode;
 use crate::core::compiler::artifact;
-use crate::core::compiler::build_runner::UnitHash;
+use crate::core::compiler::build_runner::{JobDependencies, UnitHash};
 use crate::core::compiler::job_queue::JobState;
 use crate::core::{PackageId, Target, profiles::ProfileRoot};
 use crate::util::data_structures::HashMap;
@@ -279,7 +279,11 @@ impl LinkArgTarget {
 
 /// Prepares a `Work` that executes the target as a custom build script.
 #[tracing::instrument(skip_all)]
-pub fn prepare(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<Job> {
+pub fn prepare(
+    build_runner: &mut BuildRunner<'_, '_>,
+    unit: &Unit,
+    job_dependencies: &JobDependencies,
+) -> CargoResult<Job> {
     let metadata = build_runner.get_run_build_script_metadata(unit);
     if build_runner
         .build_script_outputs
@@ -288,9 +292,17 @@ pub fn prepare(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResu
         .contains_key(metadata)
     {
         // The output is already set, thus the build script is overridden.
-        fingerprint::prepare_target(build_runner, unit, false)
+        let prepared = fingerprint::prepare_target(build_runner, unit, false)?;
+        finish_target(
+            build_runner,
+            unit,
+            prepared,
+            Work::noop(),
+            Work::noop(),
+            job_dependencies,
+        )
     } else {
-        build_work(build_runner, unit)
+        build_work(build_runner, unit, job_dependencies)
     }
 }
 
@@ -329,7 +341,11 @@ fn emit_build_output(
 /// * Create the output dir (`OUT_DIR`) for the build script output.
 /// * Determine if the build script needs a re-run.
 /// * Run the build script and store its output.
-fn build_work(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<Job> {
+fn build_work(
+    build_runner: &mut BuildRunner<'_, '_>,
+    unit: &Unit,
+    job_dependencies: &JobDependencies,
+) -> CargoResult<Job> {
     assert!(unit.mode.is_run_custom_build());
     let bcx = &build_runner.bcx;
     let dependencies = build_runner.unit_deps(unit);
@@ -741,13 +757,34 @@ fn build_work(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResul
         Ok(())
     });
 
-    let mut job = fingerprint::prepare_target(build_runner, unit, false)?;
-    if job.freshness().is_dirty() {
-        job.before(dirty);
+    let prepared = fingerprint::prepare_target(build_runner, unit, false)?;
+    finish_target(
+        build_runner,
+        unit,
+        prepared,
+        dirty,
+        fresh,
+        job_dependencies,
+    )
+}
+
+fn finish_target(
+    build_runner: &BuildRunner<'_, '_>,
+    unit: &Unit,
+    prepared: fingerprint::PreparedTarget,
+    dirty: Work,
+    fresh: Work,
+    job_dependencies: &JobDependencies,
+) -> CargoResult<Job> {
+    if build_runner.bcx.gctx.cli_unstable().fine_grain_locking {
+        let locks =
+            build_runner
+                .lock_manager
+                .prepare(build_runner, unit, job_dependencies);
+        Ok(prepared.finish_locked(locks, dirty, fresh))
     } else {
-        job.before(fresh);
+        prepared.finish(dirty, fresh)
     }
-    Ok(job)
 }
 
 /// When a build script run fails, store only log messages, and nuke other

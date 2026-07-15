@@ -127,6 +127,7 @@ fn run_unit_tests(
         path,
         script_metas,
         env,
+        ..
     } in compilation.tests.iter()
     {
         let (exe_display, mut cmd) = cmd_builds(
@@ -287,6 +288,7 @@ fn display_no_run_information(
         path,
         script_metas,
         env,
+        ..
     } in compilation.tests.iter()
     {
         let (exe_display, cmd) = cmd_builds(

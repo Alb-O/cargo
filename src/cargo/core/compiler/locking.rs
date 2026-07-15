@@ -1,105 +1,218 @@
-//! This module handles the locking logic during compilation.
+//! Build-unit locking for concurrent Cargo processes.
 
-use crate::util::flock;
-use crate::{
-    CargoResult,
-    core::compiler::{BuildRunner, Unit},
-    util::{FileLock, Filesystem},
-};
+use std::collections::BTreeMap;
+use std::fmt::{Display, Formatter};
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::util::data_structures::HashMap;
-use anyhow::bail;
-use std::{
-    fmt::{Display, Formatter},
-    path::PathBuf,
-    sync::RwLock,
-};
 use tracing::instrument;
 
-/// A struct to store the lock handles for build units during compilation.
-pub struct LockManager {
-    locks: RwLock<HashMap<LockKey, FileLock>>,
-}
+use crate::core::compiler::build_runner::{DependencyArtifact, JobDependencies};
+use crate::core::compiler::{BuildRunner, Unit};
+use crate::util::flock;
+use crate::util::CargoResult;
+
+/// Creates job-scoped lock sets for build units.
+pub(crate) struct LockManager;
 
 impl LockManager {
-    pub fn new() -> Self {
-        Self {
-            locks: RwLock::new(HashMap::default()),
-        }
+    pub(crate) fn new() -> Self {
+        Self
     }
 
-    /// Takes a shared lock on a given [`Unit`]
-    /// This prevents other Cargo instances from compiling (writing) to
-    /// this build unit.
+    /// Prepares a path-only lock set for one job.
     ///
-    /// This function returns a [`LockKey`] which can be used to
-    /// upgrade/unlock the lock.
-    #[instrument(skip_all, fields(key))]
-    pub fn lock_shared(
+    /// Handles are opened when the job starts. Dependencies needed only for
+    /// pipelining use their metadata lock; dependencies whose object code is
+    /// needed use their full-unit lock.
+    pub(crate) fn prepare(
         &self,
         build_runner: &BuildRunner<'_, '_>,
         unit: &Unit,
-    ) -> CargoResult<LockKey> {
-        let key = LockKey::from_unit(build_runner, unit);
-        tracing::Span::current().record("key", key.0.to_str());
-
-        let mut locks = self.locks.write().unwrap();
-        if let Some(lock) = locks.get_mut(&key) {
-            flock::lock_shared(lock.file())?;
-        } else {
-            let fs = Filesystem::new(key.0.clone());
-            let lock_msg = format!(
-                "{} ({})",
-                unit.pkg.name(),
-                build_runner.files().unit_hash(unit)
-            );
-            let lock = fs.open_ro_shared_create(&key.0, build_runner.bcx.gctx, &lock_msg)?;
-            locks.insert(key.clone(), lock);
+        dependencies: &JobDependencies,
+    ) -> UnitLockSet {
+        let own_full = LockKey::full(build_runner, unit);
+        let own_metadata = LockKey::metadata(build_runner, unit);
+        let mut requests = BTreeMap::new();
+        for (dependency, artifact) in dependencies {
+            let key = match artifact {
+                DependencyArtifact::All => LockKey::full(build_runner, dependency),
+                DependencyArtifact::Metadata => LockKey::metadata(build_runner, dependency),
+            };
+            requests.entry(key).or_insert(LockMode::Shared);
         }
+        requests.insert(own_full.clone(), LockMode::Exclusive);
+        requests.insert(own_metadata.clone(), LockMode::Exclusive);
+        let requests = requests.into_iter().collect::<Vec<_>>();
+        let own_full = requests
+            .binary_search_by(|(key, _)| key.cmp(&own_full))
+            .expect("unit lock set contains its full lock");
+        let own_metadata = requests
+            .binary_search_by(|(key, _)| key.cmp(&own_metadata))
+            .expect("unit lock set contains its metadata lock");
 
-        Ok(key)
+        UnitLockSet {
+            own_full,
+            own_metadata,
+            requests,
+        }
     }
 
-    #[instrument(skip(self))]
-    pub fn lock(&self, key: &LockKey) -> CargoResult<()> {
-        let locks = self.locks.read().unwrap();
-        if let Some(lock) = locks.get(&key) {
-            flock::lock_exclusive(lock.file())?;
-        } else {
-            bail!("lock was not found in lock manager: {key}");
-        }
+    /// Prepares path-only exclusive locks for user-facing artifact destinations.
+    pub(crate) fn prepare_artifact_publication(
+        &self,
+        build_runner: &BuildRunner<'_, '_>,
+        destinations: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) -> ArtifactLockSet {
+        let target_root = build_runner.bcx.ws.target_dir().into_path_unlocked();
+        let lock_root = target_root.join(".cargo-artifact-locks/v1");
+        let mut paths = destinations
+            .into_iter()
+            .map(|destination| {
+                let destination = destination.as_ref();
+                let relative = destination.strip_prefix(&target_root);
+                let key = match relative {
+                    Ok(relative) => crate::util::short_hash(&(true, relative)),
+                    Err(_) => crate::util::short_hash(&(false, destination)),
+                };
+                lock_root.join(format!("{key}.lock"))
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        ArtifactLockSet(paths)
+    }
 
+    /// Prepares a shared lease for reading one completed unit.
+    pub(crate) fn prepare_unit_read(
+        &self,
+        build_runner: &BuildRunner<'_, '_>,
+        unit: &Unit,
+    ) -> UnitReadLock {
+        UnitReadLock(build_runner.files().build_unit_lock(unit))
+    }
+}
+
+/// Exclusive publication locks acquired lazily in a stable order.
+pub(crate) struct ArtifactLockSet(Vec<PathBuf>);
+
+impl ArtifactLockSet {
+    pub(crate) fn acquire(&self) -> CargoResult<ArtifactLockLease> {
+        let mut locks = Vec::with_capacity(self.0.len());
+        for path in &self.0 {
+            let file = flock::open_lock_file(path)?;
+            flock::lock_exclusive(&file)?;
+            locks.push(file);
+        }
+        Ok(ArtifactLockLease { _locks: locks })
+    }
+}
+
+/// Keeps artifact publication locks held until it is dropped.
+pub(crate) struct ArtifactLockLease {
+    _locks: Vec<File>,
+}
+
+/// A lazily opened shared lock for consuming one completed unit.
+pub(crate) struct UnitReadLock(PathBuf);
+
+impl UnitReadLock {
+    pub(crate) fn acquire(&self) -> CargoResult<UnitReadLease> {
+        let file = flock::open_lock_file(&self.0)?;
+        flock::lock_shared(&file)?;
+        Ok(UnitReadLease { _file: file })
+    }
+}
+
+/// Keeps a completed unit stable while it is being consumed.
+pub(crate) struct UnitReadLease {
+    _file: File,
+}
+
+/// A sorted set of lock paths owned by one queued job.
+pub(crate) struct UnitLockSet {
+    own_full: usize,
+    own_metadata: usize,
+    requests: Vec<(LockKey, LockMode)>,
+}
+
+impl UnitLockSet {
+    pub(crate) fn acquire_shared(&self) -> CargoResult<UnitLockLease> {
+        self.acquire_with(false)
+    }
+
+    #[instrument(skip_all, fields(unit = %self.requests[self.own_full].0))]
+    pub(crate) fn acquire(&self) -> CargoResult<UnitLockLease> {
+        self.acquire_with(true)
+    }
+
+    fn acquire_with(&self, requested_modes: bool) -> CargoResult<UnitLockLease> {
+        let mut locks = Vec::with_capacity(self.requests.len());
+        for (key, mode) in &self.requests {
+            let file = flock::open_lock_file(&key.0)?;
+            match (requested_modes, mode) {
+                (true, LockMode::Exclusive) => flock::lock_exclusive(&file)?,
+                _ => flock::lock_shared(&file)?,
+            }
+            locks.push(file);
+        }
+        Ok(UnitLockLease {
+            locks,
+            own_full: self.own_full,
+            own_metadata: self.own_metadata,
+            full_downgraded: AtomicBool::new(!requested_modes),
+            metadata_downgraded: AtomicBool::new(!requested_modes),
+        })
+    }
+}
+
+/// Open unit locks held by a running job.
+pub(crate) struct UnitLockLease {
+    locks: Vec<File>,
+    own_full: usize,
+    own_metadata: usize,
+    full_downgraded: AtomicBool,
+    metadata_downgraded: AtomicBool,
+}
+
+impl UnitLockLease {
+    /// Allows pipelined dependents to consume metadata while the producer
+    /// continues generating object code.
+    pub(crate) fn metadata_produced(&self) -> CargoResult<()> {
+        if !self.metadata_downgraded.swap(true, Ordering::Relaxed) {
+            flock::lock_shared(&self.locks[self.own_metadata])?;
+        }
         Ok(())
     }
 
-    /// Upgrades an existing exclusive lock into a shared lock.
-    #[instrument(skip(self))]
-    pub fn downgrade_to_shared(&self, key: &LockKey) -> CargoResult<()> {
-        let locks = self.locks.read().unwrap();
-        let Some(lock) = locks.get(key) else {
-            bail!("lock was not found in lock manager: {key}");
-        };
-        flock::lock_shared(lock.file())?;
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub fn unlock(&self, key: &LockKey) -> CargoResult<()> {
-        let locks = self.locks.read().unwrap();
-        if let Some(lock) = locks.get(key) {
-            flock::unlock(lock.file())?;
-        };
-
+    /// Converts the job's own locks to shared access before consuming a fresh
+    /// artifact. Dependency locks are already shared.
+    pub(crate) fn downgrade_own(&self) -> CargoResult<()> {
+        self.metadata_produced()?;
+        if !self.full_downgraded.swap(true, Ordering::Relaxed) {
+            flock::lock_shared(&self.locks[self.own_full])?;
+        }
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct LockKey(PathBuf);
+#[derive(Clone, Copy)]
+enum LockMode {
+    Shared,
+    Exclusive,
+}
+
+#[derive(Debug, Clone, Hash, Eq, Ord, PartialEq, PartialOrd)]
+struct LockKey(PathBuf);
 
 impl LockKey {
-    fn from_unit(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> Self {
+    fn full(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> Self {
         Self(build_runner.files().build_unit_lock(unit))
+    }
+
+    fn metadata(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> Self {
+        Self(build_runner.files().build_unit_metadata_lock(unit))
     }
 }
 

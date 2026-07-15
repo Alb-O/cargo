@@ -387,6 +387,13 @@ fn build_dir_ignored_path_patterns() -> Vec<String> {
         "[..].dSYM/[..]",
         // Ignore Windows debug symbols files (.pdb)
         "[..].pdb",
+        // Internal concurrency coordination does not affect artifact layout.
+        "[..]/.cargo-artifact-locks/v1/[..]",
+        "[..]/.input-variants/v1/locks/[..]",
+        "[..]/fingerprint/[..].generation",
+        "[..]/.fingerprint/[..].generation",
+        "[..]/.cargo-input-variants-lock",
+        "[..]/.rmeta-lock",
     ]
     .into_iter()
     .map(ToString::to_string)

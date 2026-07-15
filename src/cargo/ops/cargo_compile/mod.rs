@@ -60,6 +60,7 @@ use crate::util::context::{GlobalContext, WarningHandling};
 use crate::util::interning::InternedString;
 use crate::util::log_message::LogMessage;
 use crate::util::{CargoResult, StableHasher};
+use cargo_util::paths;
 
 mod compile_filter;
 use cargo_util_terminal::report::{Group, Level, Origin};
@@ -169,6 +170,25 @@ fn compile_ws<'a>(
 ) -> CargoResult<Compilation<'a>> {
     let build_root = ws.build_dir();
     let target_root = ws.target_dir();
+    let fine_grain_locking = ws.gctx().cli_unstable().fine_grain_locking;
+    if fine_grain_locking && cfg!(target_os = "solaris") {
+        anyhow::bail!(
+            "fine-grained build locking is not supported with process-scoped Solaris locks"
+        );
+    }
+    if fine_grain_locking {
+        paths::create_dir_all_excluded_from_backups_atomic(build_root.as_path_unlocked())?;
+        if target_root != build_root {
+            paths::create_dir_all_excluded_from_backups_atomic(target_root.as_path_unlocked())?;
+        }
+        let build_root_on_nfs =
+            crate::util::flock::is_on_nfs_mount(build_root.as_path_unlocked());
+        let target_root_on_nfs = target_root != build_root
+            && crate::util::flock::is_on_nfs_mount(target_root.as_path_unlocked());
+        if build_root_on_nfs || target_root_on_nfs {
+            anyhow::bail!("fine-grained build locking is not supported on NFS build directories");
+        }
+    }
     let _build_variant_lock = build_root.open_ro_shared_create(
         ".cargo-input-variants-lock",
         ws.gctx(),

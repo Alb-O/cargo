@@ -31,6 +31,17 @@ mod compilation_files;
 use self::compilation_files::CompilationFiles;
 pub use self::compilation_files::{Metadata, OutputFile, UnitHash};
 
+/// Artifact readiness used for scheduling and interprocess dependency locks.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum DependencyArtifact {
+    /// The dependency must finish completely.
+    All,
+    /// The dependency's metadata is sufficient for a pipelined consumer.
+    Metadata,
+}
+
+pub(crate) type JobDependencies = HashMap<Unit, DependencyArtifact>;
+
 /// Collection of all the stuff that is needed to perform a build.
 ///
 /// Different from the [`BuildContext`], `Context` is a _mutable_ state used
@@ -93,7 +104,7 @@ pub struct BuildRunner<'a, 'gctx> {
     pub unused_dep_state: UnusedDepState,
 
     /// Manages locks for build units when fine grain locking is enabled.
-    pub lock_manager: Arc<LockManager>,
+    pub(crate) lock_manager: Arc<LockManager>,
 }
 
 impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
@@ -323,22 +334,30 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
                 continue;
             }
 
-            let bindst = output.bin_dst();
-
             if unit.mode == CompileMode::Test {
                 self.compilation
                     .tests
-                    .push(self.unit_output(unit, &output.path)?);
+                    .push(self.unit_output(unit, &output.path, output.bin_dst())?);
             } else if unit.target.is_executable() {
+                let path = if self.bcx.gctx.cli_unstable().fine_grain_locking {
+                    &output.path
+                } else {
+                    output.bin_dst()
+                };
                 self.compilation
                     .binaries
-                    .push(self.unit_output(unit, bindst)?);
+                    .push(self.unit_output(unit, path, output.bin_dst())?);
             } else if unit.target.is_cdylib()
                 && !self.compilation.cdylibs.iter().any(|uo| uo.unit == *unit)
             {
+                let path = if self.bcx.gctx.cli_unstable().fine_grain_locking {
+                    &output.path
+                } else {
+                    output.bin_dst()
+                };
                 self.compilation
                     .cdylibs
-                    .push(self.unit_output(unit, bindst)?);
+                    .push(self.unit_output(unit, path, output.bin_dst())?);
             }
         }
         Ok(())
@@ -413,14 +432,8 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
     #[tracing::instrument(skip_all)]
     pub fn prepare_units(&mut self) -> CargoResult<()> {
         let dest = self.bcx.profiles.get_dir_name();
-        // We try to only lock the artifact-dir if we need to.
-        // For example, `cargo check` does not write any files to the artifact-dir so we don't need
-        // to lock it.
-        let must_take_artifact_dir_lock = match self.bcx.build_config.intent {
+        let needs_artifact_dir = match self.bcx.build_config.intent {
             UserIntent::Check { .. } => {
-                // Generally cargo check does not need to take the artifact-dir lock but there is
-                // one exception: If check has `--timings` we still need to lock artifact-dir since
-                // we will output the report files.
                 self.bcx.build_config.timing_report
             }
             UserIntent::Build
@@ -429,8 +442,19 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
             | UserIntent::Doctest
             | UserIntent::Bench => true,
         };
-        let host_layout =
-            Layout::new(self.bcx.ws, None, &dest, must_take_artifact_dir_lock, false)?;
+        // Documentation and timing reports mutate shared directory trees. Other
+        // artifacts are published under per-destination locks.
+        let must_take_artifact_dir_lock = !self.bcx.gctx.cli_unstable().fine_grain_locking
+            || self.bcx.build_config.intent.is_doc()
+            || self.bcx.build_config.timing_report;
+        let host_layout = Layout::new(
+            self.bcx.ws,
+            None,
+            &dest,
+            needs_artifact_dir,
+            must_take_artifact_dir_lock,
+            false,
+        )?;
         let mut targets = HashMap::default();
         for kind in self.bcx.all_kinds.iter() {
             if let CompileKind::Target(target) = *kind {
@@ -438,6 +462,7 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
                     self.bcx.ws,
                     Some(target),
                     &dest,
+                    needs_artifact_dir,
                     must_take_artifact_dir_lock,
                     false,
                 )?;
@@ -521,6 +546,52 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
         &self.bcx.unit_graph[unit]
     }
 
+    /// Dependencies that must be ready before a job can run, including the
+    /// full transitive artifacts needed for linking.
+    pub(crate) fn job_dependencies(&self, unit: &Unit) -> JobDependencies {
+        let unit_deps = self.unit_deps(unit);
+        let mut dependencies = unit_deps
+            .iter()
+            .filter(|dep| {
+                // Binaries aren't needed to compile tests, only to run them.
+                (!dep.unit.target.is_test() && !dep.unit.target.is_bin())
+                    || dep.unit.artifact.is_true()
+                    || dep.unit.mode.is_doc_scrape()
+            })
+            .map(|dep| {
+                let artifact = if self.only_requires_rmeta(unit, &dep.unit) {
+                    DependencyArtifact::Metadata
+                } else {
+                    DependencyArtifact::All
+                };
+                (dep.unit.clone(), artifact)
+            })
+            .collect::<HashMap<_, _>>();
+
+        if unit.requires_upstream_objects() {
+            for dep in unit_deps {
+                depend_on_deps_of_deps(self, &mut dependencies, &dep.unit);
+            }
+        }
+
+        fn depend_on_deps_of_deps(
+            build_runner: &BuildRunner<'_, '_>,
+            dependencies: &mut HashMap<Unit, DependencyArtifact>,
+            unit: &Unit,
+        ) {
+            for dep in build_runner.unit_deps(unit) {
+                if dependencies
+                    .insert(dep.unit.clone(), DependencyArtifact::All)
+                    .is_none()
+                {
+                    depend_on_deps_of_deps(build_runner, dependencies, &dep.unit);
+                }
+            }
+        }
+
+        dependencies
+    }
+
     /// Returns the `RunCustomBuild` Units associated with the given Unit.
     ///
     /// If the package does not have a build script, this returns None.
@@ -579,12 +650,21 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
 
     /// Returns a [`UnitOutput`] which represents some information about the
     /// output of a unit.
-    pub fn unit_output(&self, unit: &Unit, path: &Path) -> CargoResult<UnitOutput> {
+    pub fn unit_output(
+        &self,
+        unit: &Unit,
+        path: &Path,
+        target_path: &Path,
+    ) -> CargoResult<UnitOutput> {
         let script_metas = self.find_build_script_metadatas(unit);
-        let env = artifact::get_env(&self, unit, self.unit_deps(unit))?;
+        let env = artifact::get_env(self, unit, self.unit_deps(unit))?;
         Ok(UnitOutput {
             unit: unit.clone(),
             path: path.to_path_buf(),
+            target_filename: target_path
+                .file_name()
+                .expect("compiler output has a filename")
+                .to_os_string(),
             script_metas,
             env,
         })

@@ -354,6 +354,14 @@ impl Filesystem {
     }
 }
 
+/// Opens an unlocked file for callers that manage a strict lock lifecycle.
+pub(crate) fn open_lock_file(path: &Path) -> CargoResult<File> {
+    let mut opts = OpenOptions::new();
+    opts.read(true).write(true).create(true);
+    let (_, file) = Filesystem::new(PathBuf::new()).open(path, &opts, true)?;
+    Ok(file)
+}
+
 impl PartialEq<Path> for Filesystem {
     fn eq(&self, other: &Path) -> bool {
         self.root == other

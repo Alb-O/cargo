@@ -4,7 +4,7 @@
 use crate::util::data_structures::HashSet;
 use cargo_util::paths::normalize_path;
 use std::collections::BTreeSet;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::{BuildRunner, FileFlavor, Unit, fingerprint};
@@ -46,32 +46,46 @@ fn add_deps_for_unit(
     deps: &mut BTreeSet<PathBuf>,
     build_runner: &mut BuildRunner<'_, '_>,
     unit: &Unit,
+    locked_root: &Unit,
     visited: &mut HashSet<Unit>,
-) -> CargoResult<()> {
+) -> CargoResult<bool> {
     if !visited.insert(unit.clone()) {
-        return Ok(());
+        return Ok(true);
     }
+    let unit_lock = (build_runner.bcx.gctx.cli_unstable().fine_grain_locking
+        && unit != locked_root)
+        .then(|| {
+            build_runner
+                .lock_manager
+                .prepare_unit_read(build_runner, unit)
+        });
+    let _unit_lease = unit_lock
+        .as_ref()
+        .map(|lock| lock.acquire())
+        .transpose()?;
 
     // units representing the execution of a build script don't actually
     // generate a dep info file, so we just keep on going below
     if !unit.mode.is_run_custom_build() {
         // Add dependencies from rustc dep-info output (stored in fingerprint directory)
         let dep_info_loc = fingerprint::dep_info_loc(build_runner, unit);
-        if let Some(paths) = fingerprint::parse_dep_info(
+        let paths = match fingerprint::parse_dep_info(
             unit.pkg.root(),
             build_runner.files().host_build_root(),
             &dep_info_loc,
-        )? {
-            for path in paths.files.into_keys() {
-                deps.insert(path);
+        ) {
+            Ok(Some(paths)) => paths,
+            Ok(None) | Err(_) => {
+                debug!(
+                    "can't find dep_info for {:?} {}",
+                    unit.pkg.package_id(),
+                    unit.target
+                );
+                return Ok(false);
             }
-        } else {
-            debug!(
-                "can't find dep_info for {:?} {}",
-                unit.pkg.package_id(),
-                unit.target
-            );
-            return Err(internal("dep_info missing"));
+        };
+        for path in paths.files.into_keys() {
+            deps.insert(path);
         }
     }
 
@@ -102,15 +116,18 @@ fn add_deps_for_unit(
             }
         }
     }
+    drop(_unit_lease);
 
     // Recursively traverse all transitive dependencies
     let unit_deps = Vec::from(build_runner.unit_deps(unit)); // Create vec due to mutable borrow.
     for dep in unit_deps {
-        if dep.unit.is_local() {
-            add_deps_for_unit(deps, build_runner, &dep.unit, visited)?;
+        if dep.unit.is_local()
+            && !add_deps_for_unit(deps, build_runner, &dep.unit, locked_root, visited)?
+        {
+            return Ok(false);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Save a `.d` dep-info file for the given unit. This is the third kind of
@@ -132,9 +149,18 @@ fn add_deps_for_unit(
 /// [`fingerprint`]: super::fingerprint#dep-info-files
 pub fn output_depinfo(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<()> {
     let bcx = build_runner.bcx;
+    let root_lock = bcx.gctx.cli_unstable().fine_grain_locking.then(|| {
+        build_runner
+            .lock_manager
+            .prepare_unit_read(build_runner, unit)
+    });
+    let _root_lease = root_lock
+        .as_ref()
+        .map(|lock| lock.acquire())
+        .transpose()?;
     let mut deps = BTreeSet::new();
     let mut visited = HashSet::default();
-    let success = add_deps_for_unit(&mut deps, build_runner, unit, &mut visited).is_ok();
+    let success = add_deps_for_unit(&mut deps, build_runner, unit, unit, &mut visited)?;
     let basedir_string;
     let basedir = match bcx.gctx.build_config()?.dep_info_basedir.clone() {
         Some(value) => {
@@ -152,45 +178,69 @@ pub fn output_depinfo(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> Ca
         .iter()
         .map(|f| render_filename(f, basedir))
         .collect::<CargoResult<Vec<_>>>()?;
-
-    for output in build_runner.outputs(unit)?.iter().filter(|o| {
-        !matches!(
-            o.flavor,
-            FileFlavor::DebugInfo | FileFlavor::Auxiliary | FileFlavor::Sbom
+    let outputs = build_runner.outputs(unit)?;
+    let publication_locks = bcx.gctx.cli_unstable().fine_grain_locking.then(|| {
+        build_runner.lock_manager.prepare_artifact_publication(
+            build_runner,
+            outputs
+                .iter()
+                .filter_map(|output| output.hardlink.as_ref()),
         )
-    }) {
-        if let Some(ref link_dst) = output.hardlink {
-            let output_path = link_dst.with_extension("d");
-            if success {
-                let target_fn = render_filename(link_dst, basedir)?;
+    });
+    let _publication_lease = publication_locks
+        .as_ref()
+        .map(|locks| locks.acquire())
+        .transpose()?;
 
-                // If nothing changed don't recreate the file which could alter
-                // its mtime
-                if let Ok(previous) = fingerprint::parse_rustc_dep_info(&output_path) {
-                    if previous
-                        .files
-                        .iter()
-                        .map(|(path, _checksum)| path)
-                        .eq(deps.iter().map(Path::new))
-                    {
-                        continue;
-                    }
+    let republish = publication_locks.is_some();
+    for output in outputs.iter() {
+        if republish
+            && let Some(destination) = &output.hardlink
+            && output.path.exists()
+        {
+            paths::link_or_copy_atomic(&output.path, destination)?;
+        }
+
+        if matches!(
+            output.flavor,
+            FileFlavor::DebugInfo | FileFlavor::Auxiliary | FileFlavor::Sbom
+        ) {
+            continue;
+        }
+        let Some(link_dst) = &output.hardlink else {
+            continue;
+        };
+        let output_path = link_dst.with_extension("d");
+        if success {
+            let target_fn = render_filename(link_dst, basedir)?;
+
+            // If nothing changed don't recreate the file which could alter
+            // its mtime
+            if let Ok(previous) = fingerprint::parse_rustc_dep_info(&output_path) {
+                if previous
+                    .files
+                    .iter()
+                    .map(|(path, _checksum)| path)
+                    .eq(deps.iter().map(Path::new))
+                {
+                    continue;
                 }
-
-                // Otherwise write it all out
-                let mut outfile = BufWriter::new(paths::create(output_path)?);
-                write!(outfile, "{}:", target_fn)?;
-                for dep in &deps {
-                    write!(outfile, " {}", dep)?;
-                }
-                writeln!(outfile)?;
-
-            // dep-info generation failed, so delete output file. This will
-            // usually cause the build system to always rerun the build
-            // rule, which is correct if inefficient.
-            } else if output_path.exists() {
-                paths::remove_file(output_path)?;
             }
+
+            // Otherwise write it all out
+            let mut contents = Vec::new();
+            write!(contents, "{}:", target_fn)?;
+            for dep in &deps {
+                write!(contents, " {}", dep)?;
+            }
+            writeln!(contents)?;
+            paths::write_atomic(output_path, contents)?;
+
+        } else if output_path.exists() {
+            // Dep-info generation failed, so delete the output file. This will
+            // usually cause the build system to always rerun the build rule,
+            // which is correct if inefficient.
+            paths::remove_file(output_path)?;
         }
     }
     Ok(())

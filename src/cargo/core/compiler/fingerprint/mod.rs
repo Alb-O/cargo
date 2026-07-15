@@ -387,6 +387,7 @@ use std::io::{self};
 use std::ops::Not;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use anyhow::Context as _;
@@ -415,6 +416,8 @@ use super::Unit;
 use super::UnitIndex;
 use super::Work;
 use super::custom_build::BuildDeps;
+use super::job_queue::Freshness;
+use super::locking::UnitLockSet;
 
 pub use self::dep_info::Checksum;
 pub use self::dep_info::parse_dep_info;
@@ -434,14 +437,140 @@ enum FingerprintComparison {
     },
 }
 
+/// A calculated fingerprint with the work needed for either freshness result.
+pub struct PreparedTarget {
+    loc: PathBuf,
+    recheck: FingerprintRecheck,
+    freshness: Freshness,
+    fresh: Work,
+    write_fingerprint: Work,
+    commit: Work,
+}
+
+impl PreparedTarget {
+    /// Finishes a target using the process-wide directory lock.
+    pub fn finish(self, dirty: Work, fresh: Work) -> CargoResult<Job> {
+        match self.freshness.clone() {
+            Freshness::Fresh => {
+                let mut job = Job::new_fresh();
+                job.before(self.fresh.then(fresh));
+                Ok(job)
+            }
+            Freshness::Dirty(reason) => {
+                self.invalidate()?;
+                Ok(Job::new_dirty(
+                    dirty.then(self.write_fingerprint).then(self.commit),
+                    reason,
+                ))
+            }
+        }
+    }
+
+    /// Rechecks freshness after taking a job-scoped cross-process lock.
+    pub fn finish_locked(
+        self,
+        locks: UnitLockSet,
+        dirty: Work,
+        fresh: Work,
+    ) -> Job {
+        let planned_freshness = self.freshness.clone();
+        let planned_fresh = planned_freshness.is_fresh();
+        let work = Work::new(move |state| {
+            if planned_fresh {
+                let lease = locks.acquire_shared()?;
+                if state.recheck_fingerprint(self.recheck.clone())? {
+                    self.fresh.call(state)?;
+                    return fresh.call(state);
+                }
+                drop(lease);
+            }
+
+            let lease = Arc::new(locks.acquire()?);
+            state.set_unit_lock_lease(Arc::clone(&lease));
+            if state.recheck_fingerprint(self.recheck.clone())? {
+                lease.downgrade_own()?;
+                self.fresh.call(state)?;
+                fresh.call(state)
+            } else {
+                state.verify_source()?;
+                self.invalidate()?;
+                dirty.call(state)?;
+                self.write_fingerprint.call(state)?;
+                self.commit.call(state)
+            }
+        });
+        Job::new_background(work, planned_freshness)
+    }
+
+    fn invalidate(&self) -> CargoResult<()> {
+        if self.loc.exists() {
+            paths::write(&self.loc, b"")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct FingerprintRecheck {
+    observed_generation: Option<Vec<u8>>,
+    mtime_on_use: bool,
+    force: bool,
+}
+
+pub(crate) fn recheck_target(
+    build_runner: &mut BuildRunner<'_, '_>,
+    unit: &Unit,
+    recheck: &FingerprintRecheck,
+) -> CargoResult<bool> {
+    // Fingerprint filesystem status and dependency mtimes are memoized during
+    // queue construction. Discard them while the worker holds its lock set so
+    // this comparison observes artifacts published while the job was waiting.
+    build_runner.fingerprints.clear();
+    build_runner.mtime_cache.clear();
+    build_runner.checksum_cache.clear();
+
+    let fingerprint = calculate(build_runner, unit)?;
+    let loc = build_runner.files().fingerprint_file_path(unit, "");
+    if recheck.mtime_on_use {
+        let time = FileTime::from_system_time(SystemTime::now());
+        debug!("mtime-on-use forcing {:?} to {}", loc, time);
+        paths::set_file_time_no_err(&loc, time);
+    }
+    let comparison = match _compare_old_fingerprint(&loc, &fingerprint) {
+        Ok(FingerprintComparison::Fresh) if recheck.force => FingerprintComparison::Dirty {
+            reason: DirtyReason::Forced,
+        },
+        Ok(comparison) => comparison,
+        Err(_) => FingerprintComparison::Dirty {
+            reason: DirtyReason::FreshBuild,
+        },
+    };
+    let generation_path = loc.with_extension("generation");
+    let winner_matches = !recheck.force
+        && matches!(comparison, FingerprintComparison::Dirty { .. })
+        && paths::read_bytes(&generation_path).ok() != recheck.observed_generation
+        && paths::read(&loc).is_ok_and(|hash| hash == util::to_hex(fingerprint.hash_u64()));
+    Ok(matches!(comparison, FingerprintComparison::Fresh) || winner_matches)
+}
+
+pub(crate) fn verify_source(
+    build_runner: &BuildRunner<'_, '_>,
+    unit: &Unit,
+) -> CargoResult<()> {
+    let source_id = unit.pkg.package_id().source_id();
+    let sources = build_runner.bcx.packages.sources();
+    let source = sources
+        .get(source_id)
+        .ok_or_else(|| internal("missing package source"))?;
+    source.verify(unit.pkg.package_id())
+}
+
 /// Determines if a [`Unit`] is up-to-date, and if not prepares necessary work to
 /// update the persisted fingerprint.
 ///
 /// This function will inspect `Unit`, calculate a fingerprint for it, and then
-/// return an appropriate [`Job`] to run. The returned `Job` will be a noop if
-/// `unit` is considered "fresh", or if it was previously built and cached.
-/// Otherwise the `Job` returned will write out the true fingerprint to the
-/// filesystem, to be executed after the unit's work has completed.
+/// return the state needed to choose fresh or dirty work. Fine-grained locking
+/// rechecks this state after acquiring the unit lock.
 ///
 /// The `force` flag is a way to force the `Job` to be "dirty", or always
 /// update the fingerprint. **Beware using this flag** because it does not
@@ -456,9 +585,25 @@ pub fn prepare_target(
     build_runner: &mut BuildRunner<'_, '_>,
     unit: &Unit,
     force: bool,
-) -> CargoResult<Job> {
+) -> CargoResult<PreparedTarget> {
     let bcx = build_runner.bcx;
     let loc = build_runner.files().fingerprint_file_path(unit, "");
+    let generation_path = loc.with_extension("generation");
+    let observed_generation = paths::read_bytes(&generation_path).ok();
+    let commit_path = generation_path.clone();
+    let commit = Work::new(move |_| {
+        static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
+        let generation = format!(
+            "{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
+        );
+        paths::write_atomic(commit_path, generation)
+    });
     let metadata = build_runner.files().metadata(unit);
     let variant_outputs = if metadata.input_variant_affected() {
         let build_root = bcx.ws.build_dir().into_path_unlocked();
@@ -516,15 +661,21 @@ pub fn prepare_target(
         });
     }
 
-    let Some(dirty_reason) = dirty_reason else {
-        if let Some((build_root, _, package, unit_id, _)) = &variant_outputs {
-            super::input_variants::outputs::touch(build_root, package, unit_id)?;
+    let fresh_variant = variant_outputs
+        .as_ref()
+        .map(|(build_root, _, package, unit_id, _)| {
+            (build_root.clone(), package.clone(), *unit_id)
+        });
+    let fresh = Work::new(move |_| {
+        if let Some((build_root, package, unit_id)) = fresh_variant {
+            super::input_variants::outputs::touch(&build_root, &package, unit_id)?;
         }
-        return Ok(Job::new_fresh());
-    };
+        Ok(())
+    });
 
-    // We're going to rebuild, so ensure the source of the crate passes all
-    // verification checks before we build it.
+    // A coarse-lock freshness decision is final, so verify dirty sources now.
+    // Fine-grained jobs defer this until the exclusive lock-time recheck
+    // actually chooses to rebuild.
     //
     // The `Source::verify` method is intended to allow sources to execute
     // pre-build checks to ensure that the relevant source code is all
@@ -532,47 +683,12 @@ pub fn prepare_target(
     // directory sources which will use this hook to perform an integrity check
     // on all files in the source to ensure they haven't changed. If they have
     // changed then an error is issued.
-    let source_id = unit.pkg.package_id().source_id();
-    let sources = bcx.packages.sources();
-    let source = sources
-        .get(source_id)
-        .ok_or_else(|| internal("missing package source"))?;
-    source.verify(unit.pkg.package_id())?;
-
-    // Clear out the old fingerprint file if it exists. This protects when
-    // compilation is interrupted leaving a corrupt file. For example, a
-    // project with a lib.rs and integration test (two units):
-    //
-    // 1. Build the library and integration test.
-    // 2. Make a change to lib.rs (NOT the integration test).
-    // 3. Build the integration test, hit Ctrl-C while linking. With gcc, this
-    //    will leave behind an incomplete executable (zero size, or partially
-    //    written). NOTE: The library builds successfully, it is the linking
-    //    of the integration test that we are interrupting.
-    // 4. Build the integration test again.
-    //
-    // Without the following line, then step 3 will leave a valid fingerprint
-    // on the disk. Then step 4 will think the integration test is "fresh"
-    // because:
-    //
-    // - There is a valid fingerprint hash on disk (written in step 1).
-    // - The mtime of the output file (the corrupt integration executable
-    //   written in step 3) is newer than all of its dependencies.
-    // - The mtime of the integration test fingerprint dep-info file (written
-    //   in step 1) is newer than the integration test's source files, because
-    //   we haven't modified any of its source files.
-    //
-    // But the executable is corrupt and needs to be rebuilt. Clearing the
-    // fingerprint at step 3 ensures that Cargo never mistakes a partially
-    // written output as up-to-date.
-    if loc.exists() {
-        // Truncate instead of delete so that compare_old_fingerprint will
-        // still log the reason for the fingerprint failure instead of just
-        // reporting "failed to read fingerprint" during the next build if
-        // this build fails.
-        paths::write(&loc, b"")?;
+    if dirty_reason.is_some() && !bcx.gctx.cli_unstable().fine_grain_locking {
+        verify_source(build_runner, unit)?;
     }
 
+    let write_loc = loc.clone();
+    let write_fingerprint_value = Arc::clone(&fingerprint);
     let write_fingerprint = if unit.mode.is_run_custom_build() {
         // For build scripts the `local` field of the fingerprint may change
         // while we're executing it. For example it could be in the legacy
@@ -602,14 +718,14 @@ pub fn prepare_target(
             // below for more information. Despite this just try to proceed and
             // hobble along if it happens to return `Some`.
             if let Some(new_local) = (gen_local)(&deps, None)? {
-                *fingerprint.local.lock().unwrap() = new_local;
+                *write_fingerprint_value.local.lock().unwrap() = new_local;
             }
 
             if let Some(variant) = input_variant {
                 variant.record_names(&output.rerun_if_env_changed)?;
             }
 
-            write_fingerprint(&loc, &fingerprint)?;
+            write_fingerprint(&write_loc, &write_fingerprint_value)?;
             if let Some((build_root, target_root, package, unit_id, owned)) = variant_outputs {
                 super::input_variants::outputs::record(
                     &build_root,
@@ -623,7 +739,7 @@ pub fn prepare_target(
         })
     } else {
         Work::new(move |_| {
-            write_fingerprint(&loc, &fingerprint)?;
+            write_fingerprint(&write_loc, &write_fingerprint_value)?;
             if let Some((build_root, target_root, package, unit_id, owned)) = variant_outputs {
                 super::input_variants::outputs::record(
                     &build_root,
@@ -637,7 +753,18 @@ pub fn prepare_target(
         })
     };
 
-    Ok(Job::new_dirty(write_fingerprint, dirty_reason))
+    Ok(PreparedTarget {
+        loc,
+        recheck: FingerprintRecheck {
+            observed_generation,
+            mtime_on_use,
+            force,
+        },
+        freshness: dirty_reason.map_or(Freshness::Fresh, Freshness::Dirty),
+        fresh,
+        write_fingerprint,
+        commit,
+    })
 }
 
 /// Dependency edge information for fingerprints. This is generated for each

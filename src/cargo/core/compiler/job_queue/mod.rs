@@ -117,7 +117,7 @@ use crate::util::data_structures::{HashMap, HashSet};
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc::Sender};
 use std::thread::{self, Scope};
 use std::time::Duration;
 use std::{env, io};
@@ -135,7 +135,9 @@ use super::BuildRunner;
 use super::CompileMode;
 use super::Unit;
 use super::UnitIndex;
+use super::build_runner::{DependencyArtifact as Artifact, JobDependencies};
 use super::custom_build::Severity;
+use super::fingerprint::{self, FingerprintRecheck};
 use super::timings::SectionTiming;
 use super::timings::Timings;
 use crate::core::compiler::descriptive_pkg_name;
@@ -334,26 +336,6 @@ impl<'gctx> DiagDedupe<'gctx> {
     }
 }
 
-/// Possible artifacts that can be produced by compilations, used as edge values
-/// in the dependency graph.
-///
-/// As edge values we can have multiple kinds of edges depending on one node,
-/// for example some units may only depend on the metadata for an rlib while
-/// others depend on the full rlib. This `Artifact` enum is used to distinguish
-/// this case and track the progress of compilations as they proceed.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-enum Artifact {
-    /// A generic placeholder for "depends on everything run by a step" and
-    /// means that we can't start the next compilation until the previous has
-    /// finished entirely.
-    All,
-
-    /// A node indicating that we only depend on the metadata of a compilation,
-    /// but the compilation is typically also producing an rlib. We can start
-    /// our step, however, before the full rlib is available.
-    Metadata,
-}
-
 enum Message {
     Run(JobId, String),
     Stdout(String),
@@ -389,6 +371,15 @@ enum Message {
     FutureIncompatReport(JobId, Vec<FutureBreakageItem>),
     SectionTiming(JobId, SectionTiming),
     UnusedExterns(JobId, std::collections::BTreeSet<InternedString>),
+    FingerprintRecheck {
+        id: JobId,
+        recheck: FingerprintRecheck,
+        response: Sender<CargoResult<bool>>,
+    },
+    VerifySource {
+        id: JobId,
+        response: Sender<CargoResult<()>>,
+    },
 }
 
 impl<'gctx> JobQueue<'gctx> {
@@ -402,81 +393,16 @@ impl<'gctx> JobQueue<'gctx> {
 
     pub fn enqueue(
         &mut self,
-        build_runner: &BuildRunner<'_, 'gctx>,
         unit: &Unit,
         job: Job,
-    ) -> CargoResult<()> {
-        let dependencies = build_runner.unit_deps(unit);
-        let mut queue_deps = dependencies
-            .iter()
-            .filter(|dep| {
-                // Binaries aren't actually needed to *compile* tests, just to run
-                // them, so we don't include this dependency edge in the job graph.
-                // But we shouldn't filter out dependencies being scraped for Rustdoc.
-                (!dep.unit.target.is_test() && !dep.unit.target.is_bin())
-                    || dep.unit.artifact.is_true()
-                    || dep.unit.mode.is_doc_scrape()
-            })
-            .map(|dep| {
-                // Handle the case here where our `unit -> dep` dependency may
-                // only require the metadata, not the full compilation to
-                // finish. Use the tables in `build_runner` to figure out what
-                // kind of artifact is associated with this dependency.
-                let artifact = if build_runner.only_requires_rmeta(unit, &dep.unit) {
-                    Artifact::Metadata
-                } else {
-                    Artifact::All
-                };
-                (dep.unit.clone(), artifact)
-            })
-            .collect::<HashMap<_, _>>();
-
-        // This is somewhat tricky, but we may need to synthesize some
-        // dependencies for this target if it requires full upstream
-        // compilations to have completed. Because of pipelining, some
-        // dependency edges may be `Metadata` due to the above clause (as
-        // opposed to everything being `All`). For example consider:
-        //
-        //    a (binary)
-        //    └ b (lib)
-        //        └ c (lib)
-        //
-        // Here the dependency edge from B to C will be `Metadata`, and the
-        // dependency edge from A to B will be `All`. For A to be compiled,
-        // however, it currently actually needs the full rlib of C. This means
-        // that we need to synthesize a dependency edge for the dependency graph
-        // from A to C. That's done here.
-        //
-        // This will walk all dependencies of the current target, and if any of
-        // *their* dependencies are `Metadata` then we depend on the `All` of
-        // the target as well. This should ensure that edges changed to
-        // `Metadata` propagate upwards `All` dependencies to anything that
-        // transitively contains the `Metadata` edge.
-        if unit.requires_upstream_objects() {
-            for dep in dependencies {
-                depend_on_deps_of_deps(build_runner, &mut queue_deps, dep.unit.clone());
-            }
-
-            fn depend_on_deps_of_deps(
-                build_runner: &BuildRunner<'_, '_>,
-                deps: &mut HashMap<Unit, Artifact>,
-                unit: Unit,
-            ) {
-                for dep in build_runner.unit_deps(&unit) {
-                    if deps.insert(dep.unit.clone(), Artifact::All).is_none() {
-                        depend_on_deps_of_deps(build_runner, deps, dep.unit.clone());
-                    }
-                }
-            }
-        }
-
+        queue_deps: JobDependencies,
+    ) {
         // For now we use a fixed placeholder value for the cost of each unit, but
         // in the future this could be used to allow users to provide hints about
         // relative expected costs of units, or this could be automatically set in
         // a smarter way using timing data from a previous compilation.
         self.queue.queue(unit.clone(), job, queue_deps, 100);
         *self.counts.entry(unit.pkg.package_id()).or_insert(0) += 1;
-        Ok(())
     }
 
     /// Executes all jobs necessary to build the dependency graph.
@@ -615,7 +541,6 @@ impl<'gctx> DrainState<'gctx> {
         build_runner: &mut BuildRunner<'_, '_>,
         event: Message,
     ) -> Result<(), ErrorToHandle> {
-        let warning_handling = build_runner.bcx.gctx.warning_handling()?;
         match event {
             Message::Run(id, cmd) => {
                 build_runner
@@ -670,6 +595,7 @@ impl<'gctx> DrainState<'gctx> {
                 self.print.print(&msg)?;
             }
             Message::Finish(id, artifact, mut result) => {
+                let warning_handling = build_runner.bcx.gctx.warning_handling()?;
                 let unit = match artifact {
                     // If `id` has completely finished we remove it
                     // from the `active` map ...
@@ -757,6 +683,22 @@ impl<'gctx> DrainState<'gctx> {
             }
             Message::SectionTiming(id, section) => {
                 self.timings.unit_section_timing(build_runner, id, &section);
+            }
+            Message::FingerprintRecheck {
+                id,
+                recheck,
+                response,
+            } => {
+                let unit = self.active[&id].clone();
+                let _ = response.send(fingerprint::recheck_target(
+                    build_runner,
+                    &unit,
+                    &recheck,
+                ));
+            }
+            Message::VerifySource { id, response } => {
+                let unit = &self.active[&id];
+                let _ = response.send(fingerprint::verify_source(build_runner, unit));
             }
         }
 
@@ -1003,9 +945,8 @@ impl<'gctx> DrainState<'gctx> {
         assert!(self.active.insert(id, unit.clone()).is_none());
 
         let messages = self.messages.clone();
-        let is_fresh = job.freshness().is_fresh();
+        let run_in_background = job.should_run_in_background();
         let rmeta_required = build_runner.rmeta_required(unit);
-        let lock_manager = build_runner.lock_manager.clone();
         let warning_handling = build_runner.bcx.gctx.warning_handling().unwrap_or_default();
 
         let doit = move |diag_dedupe| {
@@ -1014,19 +955,18 @@ impl<'gctx> DrainState<'gctx> {
                 messages,
                 diag_dedupe,
                 rmeta_required,
-                lock_manager,
                 warning_handling,
             );
             state.run_to_finish(job);
         };
 
-        match is_fresh {
-            true => {
+        match run_in_background {
+            false => {
                 // Running a fresh job on the same thread is often much faster than spawning a new
                 // thread to run the job.
                 doit(Some(&self.diag_dedupe));
             }
-            false => {
+            true => {
                 scope.spawn(move || doit(None));
             }
         }

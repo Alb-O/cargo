@@ -234,6 +234,7 @@ impl Layout {
         ws: &Workspace<'_>,
         target: Option<CompileTarget>,
         dest: &str,
+        needs_artifact_dir: bool,
         must_take_artifact_dir_lock: bool,
         must_take_build_dir_lock_exclusively: bool,
     ) -> CargoResult<Layout> {
@@ -258,8 +259,14 @@ impl Layout {
         // Now that the excluded from backups target root is created we can create the
         // actual destination (sub)subdirectory.
         paths::create_dir_all(dest.as_path_unlocked())?;
+        let build_root_on_nfs = is_on_nfs_mount(build_root.as_path_unlocked());
+        let root_on_nfs = if root == build_root {
+            build_root_on_nfs
+        } else {
+            is_on_nfs_mount(root.as_path_unlocked())
+        };
 
-        let build_dir_lock = if is_on_nfs_mount(build_root.as_path_unlocked()) {
+        let build_dir_lock = if build_root_on_nfs {
             None
         } else {
             if ws.gctx().cli_unstable().fine_grain_locking && !must_take_build_dir_lock_exclusively
@@ -285,18 +292,23 @@ impl Layout {
         // We take a shared lock on `.cargo-lock` to make sure we don't run currently with
         // older versions of Cargo (including tools that use Cargo as a library) that don't support
         // `.cargo-build-lock`.
-        let lock = if is_on_nfs_mount(root.as_path_unlocked()) {
+        let lock = if root_on_nfs {
             None
         } else {
             Some(dest.open_ro_shared_create(".cargo-lock", ws.gctx(), "artifact directory")?)
         };
 
-        let artifact_dir = if must_take_artifact_dir_lock {
-            // For now we don't do any more finer-grained locking on the artifact
-            // directory, so just lock the entire thing for the duration of this
-            // compile.
-            let artifact_dir_lock = if is_on_nfs_mount(root.as_path_unlocked()) {
+        let artifact_dir = if needs_artifact_dir {
+            let artifact_dir_lock = if root_on_nfs {
                 None
+            } else if !must_take_artifact_dir_lock {
+                // Keep older and non-fine-grained Cargo processes from
+                // publishing while destination-specific locks are active.
+                Some(dest.open_ro_shared_create(
+                    ".cargo-artifact-lock",
+                    ws.gctx(),
+                    "artifact directory",
+                )?)
             } else {
                 Some(dest.open_rw_exclusive_create(
                     ".cargo-artifact-lock",

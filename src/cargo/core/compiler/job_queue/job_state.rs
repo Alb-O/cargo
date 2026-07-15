@@ -1,16 +1,21 @@
 //! See [`JobState`].
 
-use std::{cell::Cell, marker, sync::Arc};
+use std::{
+    cell::Cell,
+    marker,
+    sync::{Arc, Mutex, mpsc},
+};
 
 use cargo_util::ProcessBuilder;
 
 use crate::core::compiler::future_incompat::FutureBreakageItem;
-use crate::core::compiler::locking::LockKey;
+use crate::core::compiler::fingerprint::FingerprintRecheck;
+use crate::core::compiler::locking::UnitLockLease;
 use crate::core::compiler::timings::SectionTiming;
 use crate::util::Queue;
 use crate::util::context::WarningHandling;
 use crate::util::interning::InternedString;
-use crate::{CargoResult, core::compiler::locking::LockManager};
+use crate::CargoResult;
 
 use super::{Artifact, DiagDedupe, Job, JobId, Message};
 
@@ -50,8 +55,7 @@ pub struct JobState<'a, 'gctx> {
     /// sending a double message later on.
     rmeta_required: Cell<bool>,
 
-    /// Manages locks for build units when fine grain locking is enabled.
-    lock_manager: Arc<LockManager>,
+    unit_lock_lease: Mutex<Option<Arc<UnitLockLease>>>,
 
     warning_handling: WarningHandling,
 
@@ -66,7 +70,6 @@ impl<'a, 'gctx> JobState<'a, 'gctx> {
         messages: Arc<Queue<Message>>,
         output: Option<&'a DiagDedupe<'gctx>>,
         rmeta_required: bool,
-        lock_manager: Arc<LockManager>,
         warning_handling: WarningHandling,
     ) -> Self {
         Self {
@@ -74,7 +77,7 @@ impl<'a, 'gctx> JobState<'a, 'gctx> {
             messages,
             output,
             rmeta_required: Cell::new(rmeta_required),
-            lock_manager,
+            unit_lock_lease: Mutex::new(None),
             warning_handling,
             _marker: marker::PhantomData,
         }
@@ -149,18 +152,45 @@ impl<'a, 'gctx> JobState<'a, 'gctx> {
     /// builds when required, and can be called at any time before a job ends.
     /// This should only be called once because a metadata file can only be
     /// produced once!
-    pub fn rmeta_produced(&self) {
+    pub fn set_unit_lock_lease(&self, lease: Arc<UnitLockLease>) {
+        *self.unit_lock_lease.lock().unwrap() = Some(lease);
+    }
+
+    pub fn rmeta_produced(&self) -> CargoResult<()> {
+        let lease = self.unit_lock_lease.lock().unwrap();
+        if let Some(lease) = lease.as_ref() {
+            lease.metadata_produced()?;
+        }
         self.rmeta_required.set(false);
         self.messages
             .push(Message::Finish(self.id, Artifact::Metadata, Ok(())));
+        Ok(())
     }
 
-    pub fn lock_exclusive(&self, lock: &LockKey) -> CargoResult<()> {
-        self.lock_manager.lock(lock)
+    pub(crate) fn recheck_fingerprint(
+        &self,
+        recheck: FingerprintRecheck,
+    ) -> CargoResult<bool> {
+        let (response, result) = mpsc::channel();
+        self.messages.push(Message::FingerprintRecheck {
+            id: self.id,
+            recheck,
+            response,
+        });
+        result
+            .recv()
+            .map_err(|_| anyhow::format_err!("fingerprint recheck response channel closed"))?
     }
 
-    pub fn downgrade_to_shared(&self, lock: &LockKey) -> CargoResult<()> {
-        self.lock_manager.downgrade_to_shared(lock)
+    pub(crate) fn verify_source(&self) -> CargoResult<()> {
+        let (response, result) = mpsc::channel();
+        self.messages.push(Message::VerifySource {
+            id: self.id,
+            response,
+        });
+        result
+            .recv()
+            .map_err(|_| anyhow::format_err!("source verification response channel closed"))?
     }
 
     pub fn on_section_timing_emitted(&self, section: SectionTiming) {
@@ -176,6 +206,7 @@ impl<'a, 'gctx> JobState<'a, 'gctx> {
             result: None,
         };
         sender.result = Some(job.run(&self));
+        self.unit_lock_lease.lock().unwrap().take();
 
         // If the `rmeta_required` wasn't consumed but it was set
         // previously, then we either have:
