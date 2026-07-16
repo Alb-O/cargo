@@ -970,6 +970,149 @@ fn fine_grain_queued_jobs_do_not_hold_lock_descriptors() {
 }
 
 #[cargo_test]
+#[cfg(target_os = "linux")]
+fn fine_grain_running_jobs_share_lock_descriptors() {
+    const DEPENDENCY_COUNT: usize = 64;
+    const ROOT_COUNT: usize = 8;
+
+    let wrapper = project()
+        .at("descriptor-wrapper")
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "descriptor-wrapper"
+                version = "0.0.0"
+                edition = "2024"
+            "#,
+        )
+        .file(
+            "src/main.rs",
+            r#"
+                use std::ffi::OsString;
+                use std::process::Command;
+
+                fn main() {
+                    let mut args = std::env::args_os().skip(1).collect::<Vec<_>>();
+                    let rustc = args.remove(0);
+                    let expanded = args
+                        .iter()
+                        .flat_map(|arg| {
+                            let arg = arg.to_string_lossy();
+                            if let Some(path) = arg.strip_prefix('@') {
+                                std::fs::read_to_string(path)
+                                    .unwrap()
+                                    .lines()
+                                    .map(OsString::from)
+                                    .collect()
+                            } else {
+                                vec![OsString::from(arg.as_ref())]
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let crate_name = expanded
+                        .windows(2)
+                        .find(|args| args[0] == "--crate-name")
+                        .map(|args| args[1].to_string_lossy().into_owned());
+                    let root = std::path::PathBuf::from(
+                        std::env::var_os("DESCRIPTOR_ROOT").unwrap()
+                    );
+
+                    if let Some(crate_name) = crate_name
+                        && crate_name.starts_with("root")
+                    {
+                        std::fs::write(root.join(format!("started-{crate_name}")), "").unwrap();
+                        while !root.join("ready").exists() {
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        }
+                    }
+
+                    let status = Command::new(rustc).args(args).status().unwrap();
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+            "#,
+        )
+        .build();
+    wrapper.cargo("build").run();
+
+    let mut manifest = String::from(
+        r#"
+            [package]
+            name = "foo"
+            version = "0.0.0"
+            edition = "2024"
+            [dependencies]
+            crate0 = { path = "crate0" }
+        "#,
+    );
+    let mut builder = project();
+    for index in 0..ROOT_COUNT {
+        manifest.push_str(&format!(
+            r#"
+                [[bin]]
+                name = "root{index}"
+                path = "src/bin/root{index}.rs"
+            "#,
+        ));
+        builder = builder.file(&format!("src/bin/root{index}.rs"), "fn main() {}");
+    }
+    builder = builder.file("Cargo.toml", &manifest);
+    for index in 0..DEPENDENCY_COUNT {
+        let dependency = if index == DEPENDENCY_COUNT - 1 {
+            String::new()
+        } else {
+            format!(
+                "[dependencies]\ncrate{} = {{ path = \"../crate{}\" }}",
+                index + 1,
+                index + 1
+            )
+        };
+        builder = builder
+            .file(
+                &format!("crate{index}/Cargo.toml"),
+                &format!(
+                    r#"
+                        [package]
+                        name = "crate{index}"
+                        version = "0.0.0"
+                        edition = "2024"
+                        {dependency}
+                    "#,
+                ),
+            )
+            .file(&format!("crate{index}/src/lib.rs"), "");
+    }
+    let p = builder.build();
+
+    let mut command = p.cargo(&format!(
+        "-Zfine-grain-locking build -j{ROOT_COUNT}"
+    ));
+    command
+        .masquerade_as_nightly_cargo(&["fine-grain-locking"])
+        .env("RUSTC_WRAPPER", wrapper.bin("descriptor-wrapper"))
+        .env("DESCRIPTOR_ROOT", p.root());
+    let mut command = command.build_command();
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = command.spawn().unwrap();
+    retry(400, || {
+        (0..ROOT_COUNT)
+            .all(|index| p.root().join(format!("started-root{index}")).exists())
+            .then_some(())
+    });
+
+    let descriptors = fs::read_dir(format!("/proc/{}/fd", child.id()))
+        .unwrap()
+        .count();
+    fs::write(p.root().join("ready"), "").unwrap();
+    let output = child.wait_with_output().unwrap();
+    execs().run_output(&output);
+    assert!(
+        descriptors < 192,
+        "running jobs retained {descriptors} file descriptors"
+    );
+}
+
+#[cargo_test]
 fn fine_grain_rechecks_dependencies_after_waiting() {
     let p = project()
         .no_manifest()
