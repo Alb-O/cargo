@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use crate::util::data_structures::HashMap;
 
-use super::{EncodedValue, FORMAT_VERSION, encode_value, variable_values, variant_key};
-use super::{VariantRecord, load_records};
+use super::{EncodedValue, FORMAT_VERSION, TrackedPath, TrackedRoot, encode_value};
+use super::{VariantRecord, file_stamp, load_records, variable_values, variant_key, write_record};
 
 #[test]
 fn variant_key_is_independent_of_declaration_order() {
@@ -53,8 +53,10 @@ fn schema_generation_makes_old_records_ineligible() {
     let old = VariantRecord {
         version: FORMAT_VERSION,
         generation: 0,
+        context_id: "context".to_owned(),
         key: 1,
         values: Vec::new(),
+        tracked_paths: Vec::new(),
         created: 0,
         last_used: 0,
     };
@@ -76,4 +78,54 @@ fn malformed_records_are_removed_as_cache_misses() {
 
     assert!(load_records(root.path(), Some(0)).unwrap().is_empty());
     assert!(!malformed.exists());
+}
+
+#[test]
+fn tracked_paths_only_invalidate_their_variant() {
+    let root = tempfile::tempdir().unwrap();
+    let first_path = root.path().join("first");
+    let second_path = root.path().join("second");
+    std::fs::write(&first_path, "first").unwrap();
+    std::fs::write(&second_path, "second").unwrap();
+    let record = |path: &std::path::Path| VariantRecord {
+        version: FORMAT_VERSION,
+        generation: 0,
+        context_id: "context".to_owned(),
+        key: 1,
+        values: Vec::new(),
+        tracked_paths: vec![TrackedPath {
+            root: TrackedRoot::Absolute,
+            path: path.to_path_buf(),
+            stamp: file_stamp(path),
+        }],
+        created: 0,
+        last_used: 0,
+    };
+    let first = record(&first_path);
+    let second = record(&second_path);
+
+    std::fs::remove_file(second_path).unwrap();
+
+    assert!(!first.is_stale(root.path(), root.path()));
+    assert!(second.is_stale(root.path(), root.path()));
+}
+
+#[test]
+fn dependency_contexts_retain_separate_records() {
+    let root = tempfile::tempdir().unwrap();
+    let record = |context_id: &str| VariantRecord {
+        version: FORMAT_VERSION,
+        generation: 0,
+        context_id: context_id.to_owned(),
+        key: 1,
+        values: Vec::new(),
+        tracked_paths: Vec::new(),
+        created: 0,
+        last_used: 0,
+    };
+
+    write_record(root.path(), &record("first")).unwrap();
+    write_record(root.path(), &record("second")).unwrap();
+
+    assert_eq!(load_records(root.path(), Some(0)).unwrap().len(), 2);
 }

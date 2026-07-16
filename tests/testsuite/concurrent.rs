@@ -745,6 +745,84 @@ fn fine_grain_builds_share_variants_and_artifact_destinations() {
 }
 
 #[cargo_test]
+fn fine_grain_discovers_novel_variants_concurrently() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.0"
+                edition = "2024"
+            "#,
+        )
+        .file(
+            "build.rs",
+            r#"
+                fn main() {
+                    let branch = std::env::var("BRANCH").unwrap();
+                    println!("cargo::rerun-if-env-changed=BRANCH");
+                    println!("cargo::rustc-env=BRANCH_VALUE={branch}");
+
+                    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+                    std::fs::write(root.join(format!("started-{branch}")), "").unwrap();
+                    while !root.join(format!("ready-{branch}")).exists() {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+            "#,
+        )
+        .file(
+            "src/main.rs",
+            r#"fn main() { println!("{}", env!("BRANCH_VALUE")); }"#,
+        )
+        .file("ready-baseline", "")
+        .build();
+
+    p.cargo("-Zfine-grain-locking run")
+        .masquerade_as_nightly_cargo(&["fine-grain-locking"])
+        .env("BRANCH", "baseline")
+        .with_stdout_data("baseline\n")
+        .run();
+
+    let commands = ["A", "B"].map(|branch| {
+        let mut command = p.cargo("-Zfine-grain-locking build");
+        command
+            .masquerade_as_nightly_cargo(&["fine-grain-locking"])
+            .env("BRANCH", branch);
+        let mut command = command.build_command();
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command.spawn().unwrap()
+    });
+
+    let mut both_started = false;
+    for _ in 0..100 {
+        if p.root().join("started-A").exists() && p.root().join("started-B").exists() {
+            both_started = true;
+            break;
+        }
+        sleep_ms(20);
+    }
+    fs::write(p.root().join("ready-A"), "").unwrap();
+    fs::write(p.root().join("ready-B"), "").unwrap();
+
+    for command in commands {
+        let output = command.wait_with_output().unwrap();
+        execs().run_output(&output);
+    }
+    assert!(both_started, "novel input variants did not run concurrently");
+
+    for branch in ["A", "B"] {
+        p.cargo("-Zfine-grain-locking run -v")
+            .masquerade_as_nightly_cargo(&["fine-grain-locking"])
+            .env("BRANCH", branch)
+            .with_stdout_data(format!("{branch}\n"))
+            .with_stderr_does_not_contain("[RUNNING] `rustc [..]")
+            .run();
+    }
+}
+
+#[cargo_test]
 fn fine_grain_serializes_input_schema_expansion() {
     let p = project()
         .file("Cargo.toml", &basic_manifest("foo", "0.0.0"))
@@ -817,6 +895,8 @@ fn fine_grain_serializes_input_schema_expansion() {
 #[cargo_test]
 #[cfg(target_os = "linux")]
 fn fine_grain_queued_jobs_do_not_hold_lock_descriptors() {
+    const CRATE_COUNT: usize = 256;
+
     let mut builder = project()
         .file(
             "Cargo.toml",
@@ -831,8 +911,8 @@ fn fine_grain_queued_jobs_do_not_hold_lock_descriptors() {
         )
         .file("src/main.rs", "fn main() {}");
 
-    for index in 0..32 {
-        let dependency = if index == 31 {
+    for index in 0..CRATE_COUNT {
+        let dependency = if index == CRATE_COUNT - 1 {
             String::new()
         } else {
             format!(
@@ -857,7 +937,7 @@ fn fine_grain_queued_jobs_do_not_hold_lock_descriptors() {
             .file(&format!("crate{index}/src/lib.rs"), "");
     }
     builder = builder.file(
-        "crate31/build.rs",
+        &format!("crate{}/build.rs", CRATE_COUNT - 1),
         r#"
             fn main() {
                 let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -874,15 +954,15 @@ fn fine_grain_queued_jobs_do_not_hold_lock_descriptors() {
     command.masquerade_as_nightly_cargo(&["fine-grain-locking"]);
     let mut command = command.build_command();
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child = command.spawn().unwrap();
+    let mut child = command.spawn().unwrap();
     retry(200, || p.root().join("started").exists().then_some(()));
 
     let descriptors = fs::read_dir(format!("/proc/{}/fd", child.id()))
         .unwrap()
         .count();
+    child.kill().unwrap();
     fs::write(p.root().join("ready"), "").unwrap();
-    let output = child.wait_with_output().unwrap();
-    execs().run_output(&output);
+    child.wait().unwrap();
     assert!(
         descriptors < 128,
         "queued jobs retained {descriptors} file descriptors"
