@@ -625,7 +625,7 @@ Caused by:
 }
 
 #[cargo_test]
-fn inherited_dependencies_override_features() {
+fn inherited_dependencies_union_features() {
     Package::new("dep", "0.1.0")
         .feature("fancy", &["fancy_dep"])
         .feature("dancy", &["dancy_dep"])
@@ -662,10 +662,12 @@ fn inherited_dependencies_override_features() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 3 packages to latest compatible versions
 [DOWNLOADING] crates ...
+[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] dancy_dep v0.6.8 (registry `dummy-registry`)
+[CHECKING] fancy_dep v0.2.4
 [CHECKING] dancy_dep v0.6.8
 [CHECKING] dep v0.1.0
 [CHECKING] bar v0.2.0 ([ROOT]/foo)
@@ -678,7 +680,7 @@ fn inherited_dependencies_override_features() {
 
     let lockfile = p.read_lockfile();
     assert!(lockfile.contains("dep"));
-    assert!(!lockfile.contains("fancy_dep"));
+    assert!(lockfile.contains("fancy_dep"));
     assert!(lockfile.contains("dancy_dep"));
 }
 

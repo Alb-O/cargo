@@ -638,12 +638,12 @@ After that, add it to the `[dependencies]` table with `workspace = true`.
 
 Along with the `workspace` key, dependencies can also include these keys:
 - [`optional`][optional]: the `[workspace.dependencies]` table cannot specify `optional`
-- [`features`][features]: replaces the inherited feature list when specified
+- [`features`][features]: additive with the features declared in `[workspace.dependencies]`
 - `default-features`: replaces the inherited default-feature setting when specified
 
 Other dependency keys, such as `version` or `path`, remain owned by the workspace declaration.
 
-When `features` or `default-features` is omitted, the value from `[workspace.dependencies]` is inherited. Normal [feature unification][features] can still enable features requested by another dependency declaration.
+When `default-features` is omitted, the value from `[workspace.dependencies]` is inherited. Normal [feature unification][features] can still enable features requested by another dependency declaration.
 
 Dependencies in the `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, and
 `[target."...".dependencies]` sections support the ability to reference the

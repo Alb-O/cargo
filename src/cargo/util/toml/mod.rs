@@ -1204,16 +1204,19 @@ fn inner_dependency_inherit_with<'a>(
         public,
 
         _unused_keys: _,
-    } = &pkg_dep;
+    } = pkg_dep;
     if default_features.is_some() || default_features2.is_some() {
-        merged_dep.default_features = *default_features;
-        merged_dep.default_features2 = *default_features2;
+        merged_dep.default_features = default_features;
+        merged_dep.default_features2 = default_features2;
     }
-    if features.is_some() {
-        merged_dep.features = features.clone();
+    if let Some(features) = features {
+        merged_dep
+            .features
+            .get_or_insert_default()
+            .extend(features);
     }
-    merged_dep.optional = *optional;
-    merged_dep.public = *public;
+    merged_dep.optional = optional;
+    merged_dep.public = public;
     Ok(manifest::TomlDependency::Detailed(merged_dep))
 }
 

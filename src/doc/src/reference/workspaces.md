@@ -220,7 +220,7 @@ inherited by members of a workspace.
 Specifying a workspace dependency is similar to [package dependencies][specifying-dependencies] except:
 - Dependencies from this table cannot be declared as `optional`
 
-Members inherit the workspace dependency's `features` and `default-features` when those fields are omitted. A member that supplies either field replaces the corresponding workspace value for that dependency declaration. Normal [feature unification][features] can still enable features requested elsewhere in the dependency graph.
+Members inherit the workspace dependency's `default-features` setting when the field is omitted. A member that supplies `default-features` replaces the workspace value for that dependency declaration. Member `features` remain additive with the features declared in this table. Normal [feature unification][features] can still enable features requested elsewhere in the dependency graph.
 
 You can then [inherit the workspace dependency as a package dependency][inheriting-a-dependency-from-a-workspace]
 

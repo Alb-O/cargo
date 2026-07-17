@@ -459,8 +459,12 @@ fn open_membership_attaches_the_invoked_child() {
         .file(
             "shared/src/lib.rs",
             r#"
-                #[cfg(any(feature = "default", feature = "workspace"))]
-                compile_error!("the child dependency feature override was ignored");
+                #[cfg(feature = "default")]
+                compile_error!("the child default-feature override was ignored");
+                #[cfg(not(feature = "workspace"))]
+                compile_error!("the workspace dependency feature was not inherited");
+                #[cfg(not(feature = "child"))]
+                compile_error!("the child dependency feature was not enabled");
 
                 pub fn shared() {}
             "#,
