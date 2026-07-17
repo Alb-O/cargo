@@ -6331,6 +6331,28 @@ fn primary_codegen_backend_only_applies_to_primary_native_units() {
 }
 
 #[cargo_test]
+fn primary_codegen_backend_skips_lto_profiles() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [profile.release]
+                lto = "thin"
+            "#,
+        )
+        .file("src/lib.rs", "pub fn foo() {}")
+        .build();
+
+    p.cargo(r#"build -v --release --config 'build.primary-codegen-backend="cranelift"'"#)
+        .with_stderr_does_not_contain("[RUNNING] `rustc --crate-name foo [..]codegen-backend[..]")
+        .run();
+}
+
+#[cargo_test]
 fn primary_package_env_var() {
     // Test that CARGO_PRIMARY_PACKAGE is enabled only for "foo" and not for any dependency.
 

@@ -104,7 +104,7 @@ pub use crate::core::compiler::unit::Unit;
 pub use crate::core::compiler::unit::UnitIndex;
 pub use crate::core::compiler::unit::UnitInterner;
 use crate::core::manifest::TargetSourcePath;
-use crate::core::profiles::{PanicStrategy, Profile, StripInner};
+use crate::core::profiles::{Lto as ProfileLto, PanicStrategy, Profile, StripInner};
 use crate::core::{Feature, PackageId, Target};
 use crate::diagnostics::get_key_value;
 use crate::util::OnceExt;
@@ -1268,10 +1268,12 @@ fn build_base_args(
         CompileKind::Host => true,
         CompileKind::Target(target) => target.rustc_target() == bcx.host_triple(),
     };
+    let lto_enabled = !matches!(unit.profile.lto, ProfileLto::Bool(false) | ProfileLto::Off);
     let codegen_backend = if codegen_backend.is_some()
         || !build_runner.is_primary_package(unit)
         || unit.mode.is_any_test()
         || !native_target
+        || lto_enabled
         || bcx
             .gctx
             .get_env_os("RUSTC_WORKSPACE_WRAPPER")
