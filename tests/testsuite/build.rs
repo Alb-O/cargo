@@ -11,9 +11,9 @@ use crate::utils::cargo_exe;
 use crate::utils::cargo_process;
 use crate::utils::tools;
 use cargo::GlobalContext;
-use cargo::core::Workspace;
-use cargo::core::compiler::UserIntent;
+use cargo::compiler::UserIntent;
 use cargo::ops::CompileOptions;
+use cargo::workspace::Workspace;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::paths::root;
 use cargo_test_support::registry::Package;
@@ -198,6 +198,26 @@ fn incremental_config() {
     p.cargo("build -v")
         .env("CARGO_INCREMENTAL", "1")
         .with_stderr_contains("[..]C incremental=[..]")
+        .run();
+}
+
+#[cargo_test]
+fn ci_implies_no_cargo_incremental() {
+    let p = project()
+        .file("Cargo.toml", &basic_bin_manifest("foo"))
+        .file("src/main.rs", &main_file(r#""i am foo""#, &[]))
+        .build();
+
+    p.cargo("build -v")
+        .env("CI", "1")
+        .env_remove("CARGO_INCREMENTAL")
+        .with_stderr_does_not_contain("[..]C incremental=[..]")
+        .run();
+
+    p.cargo("test -v")
+        .env("CI", "1")
+        .env_remove("CARGO_INCREMENTAL")
+        .with_stderr_does_not_contain("[..]C incremental=[..]")
         .run();
 }
 

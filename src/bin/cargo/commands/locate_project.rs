@@ -38,7 +38,10 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             root_manifest = args.root_manifest(gctx)?;
             // Try the membership-only fast path before loading the full workspace.
             if let Some(ws_manifest) =
-                cargo::core::find_workspace_manifest_with_membership_check(&root_manifest, gctx)?
+                cargo::workspace::find_workspace_manifest_with_membership_check(
+                    &root_manifest,
+                    gctx,
+                )?
             {
                 workspace_root = ws_manifest;
                 &workspace_root

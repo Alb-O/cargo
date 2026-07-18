@@ -1,7 +1,7 @@
 use crate::util::data_structures::HashMap;
 use anyhow::{Context as _, anyhow};
-use cargo::core::{CliUnstable, features};
-use cargo::util::context::TermConfig;
+use cargo::context::TermConfig;
+use cargo::workspace::{CliUnstable, features};
 use cargo::{CargoResult, drop_print, drop_println};
 use cargo_util_terminal::report::Level;
 use clap::builder::UnknownArgumentValueParser;
@@ -94,7 +94,7 @@ pub fn main(gctx: &mut GlobalContext) -> CliResult {
             global_args,
             Some(&exec),
         )?;
-        super::init_git(gctx);
+        super::init_git();
 
         exec.exec(gctx, subcommand_args)?;
     }
