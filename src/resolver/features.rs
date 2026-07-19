@@ -301,19 +301,6 @@ impl CliFeatures {
         }
     }
 
-    pub fn with_added_features(
-        &self,
-        features: impl IntoIterator<Item = String>,
-    ) -> CargoResult<CliFeatures> {
-        let mut combined = self
-            .features
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        combined.extend(features);
-        Self::from_command_line(&combined, self.all_features, self.uses_default_features)
-    }
-
     fn split_features(features: &[String]) -> BTreeSet<FeatureValue> {
         features
             .iter()

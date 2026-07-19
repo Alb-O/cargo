@@ -1,6 +1,5 @@
 //! [`BuildContext`] is a (mostly) static information about a build task.
 
-use crate::artifact_family::ArtifactFamily;
 use crate::compiler::BuildConfig;
 use crate::compiler::CompileKind;
 use crate::compiler::Unit;
@@ -94,12 +93,6 @@ pub struct BuildContext<'a, 'gctx> {
 
     /// The list of all kinds that are involved in this build
     pub all_kinds: HashSet<CompileKind>,
-
-    /// Activated shared artifact families.
-    pub artifact_families: Vec<ArtifactFamily>,
-
-    /// Family membership for units in configured heavy dependency closures.
-    pub artifact_family_units: HashMap<Unit, usize>,
 }
 
 impl<'a, 'gctx> BuildContext<'a, 'gctx> {
@@ -116,8 +109,6 @@ impl<'a, 'gctx> BuildContext<'a, 'gctx> {
         unit_graph: UnitGraph,
         unit_to_index: HashMap<Unit, UnitIndex>,
         scrape_units: Vec<Unit>,
-        artifact_families: Vec<ArtifactFamily>,
-        artifact_family_units: HashMap<Unit, usize>,
     ) -> CargoResult<BuildContext<'a, 'gctx>> {
         let all_kinds = unit_graph
             .keys()
@@ -141,8 +132,6 @@ impl<'a, 'gctx> BuildContext<'a, 'gctx> {
             unit_to_index,
             scrape_units,
             all_kinds,
-            artifact_families,
-            artifact_family_units,
         })
     }
 
@@ -172,17 +161,6 @@ impl<'a, 'gctx> BuildContext<'a, 'gctx> {
     /// `cargo rustc` or `cargo rustdoc`.
     pub fn extra_args_for(&self, unit: &Unit) -> Option<&Vec<String>> {
         self.extra_compiler_args.get(unit)
-    }
-
-    pub fn artifact_family(&self, unit: &Unit) -> Option<&ArtifactFamily> {
-        self.artifact_family_units
-            .get(unit)
-            .map(|index| &self.artifact_families[*index])
-    }
-
-    pub fn is_artifact_family_root(&self, unit: &Unit) -> bool {
-        self.artifact_family(unit)
-            .is_some_and(|family| unit.pkg.name().as_str() == family.scope_package)
     }
 }
 

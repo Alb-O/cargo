@@ -1162,24 +1162,6 @@ The `build.primary-codegen-backend` setting selects a codegen backend for primar
 primary-codegen-backend = "cranelift"
 ```
 
-### `[artifact-family]` (fork extension)
-
-This Cargo fork accepts named artifact families for heavy dependency subgraphs shared by workspace members or compatible workspaces.
-
-```toml
-[artifact-family.example]
-trigger-dependency = "engine"
-scope-package = "engine_dylib"
-activate-dependency-features = ["engine/dynamic_linking"]
-profiles = ["dev", "test"]
-host-target-only = true
-environment-manifest = "/nix/store/hash-example-environment.json"
-```
-
-Cargo activates a family when a selected package has an active direct trigger dependency and the requested profile and target match. It applies the dependency features and executes the scope package's dependency closure using the versioned JSON environment manifest. The workspace manifest and lockfile remain responsible for resolving the scope package and its dependency versions.
-
-Pass `--without-artifact-family <name>` to a compile command to disable one configured family for that invocation.
-
 ### `[registries]`
 
 The `[registries]` table is used for specifying additional [registries]. It

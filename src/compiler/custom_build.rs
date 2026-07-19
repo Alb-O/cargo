@@ -481,10 +481,6 @@ fn build_work(
     cmd.env("CARGO_ENCODED_RUSTFLAGS", unit.rustflags.join("\x1f"));
     cmd.env_remove("RUSTFLAGS");
 
-    if let Some(family) = bcx.artifact_family(unit) {
-        crate::artifact_family::apply_environment(family, &mut cmd)?;
-    }
-
     if build_runner.bcx.ws.gctx().extra_verbose() {
         cmd.display_env_vars();
     }

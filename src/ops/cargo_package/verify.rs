@@ -103,7 +103,6 @@ pub fn run_verify(
                 UserIntent::Build,
             )?,
             cli_features: opts.cli_features.clone(),
-            without_artifact_families: Default::default(),
             spec: ops::Packages::Packages(Vec::new()),
             filter: ops::CompileFilter::Default {
                 required_features_filterable: true,

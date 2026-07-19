@@ -949,18 +949,6 @@ fn compute_metadata(
     for metadata in &deps_metadata {
         input_variant_affected |= metadata.input_variant_affected;
     }
-    let artifact_family = bcx.artifact_family(unit);
-    if let Some(family) = artifact_family {
-        let is_family_root = unit.pkg.name().as_str() == family.scope_package;
-        if unit.mode.is_run_custom_build() || is_family_root {
-            family.context_key.hash(&mut unit_id_hasher);
-            family.context_key.hash(&mut input_schema_hasher);
-            input_variant_affected = true;
-        }
-        if is_family_root {
-            family.context_key.hash(&mut c_metadata_hasher);
-        }
-    }
     let input_schema_id = UnitHash(Hasher::finish(&input_schema_hasher));
     let input_context_id = UnitHash(Hasher::finish(&unit_id_hasher));
     let build_root = match unit.kind {
@@ -980,10 +968,6 @@ fn compute_metadata(
         } else {
             InputSource::RustcEnv
         };
-        let (variant_env, inherit_process_env) = match artifact_family {
-            Some(family) => crate::artifact_family::input_environment(family, env_config)?,
-            None => (Arc::clone(env_config), true),
-        };
         let variant = InputVariant::select(
             build_root,
             unit.pkg.name().as_str(),
@@ -991,8 +975,8 @@ fn compute_metadata(
             input_schema_id,
             input_context_id,
             source,
-            &variant_env,
-            inherit_process_env,
+            env_config,
+            true,
             bcx.gctx,
         )?;
         input_variant_affected |= variant.is_branched();
@@ -1068,19 +1052,10 @@ fn hash_rustc_version(bcx: &BuildContext<'_, '_>, hasher: &mut StableHasher, uni
     // between different backends without recompiling.
 }
 
-/// Returns whether or not this unit should use a hash in the filename to make it unique.
-fn is_artifact_family_dynamic_library(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
-    bcx.is_artifact_family_root(unit)
-        && (unit.target.is_dylib() || unit.target.is_cdylib())
-}
-
 fn use_extra_filename(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
     if unit.mode.is_doc_test() || unit.mode.is_doc() {
         // Doc tests do not have metadata.
         return false;
-    }
-    if is_artifact_family_dynamic_library(bcx, unit) {
-        return true;
     }
     if bcx.gctx.cli_unstable().build_dir_new_layout {
         if unit.mode.is_any_test() || unit.mode.is_check() {
@@ -1154,9 +1129,6 @@ fn use_pkg_dir(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
     if unit.mode.is_doc_test() || unit.mode.is_doc() {
         // Doc tests do not have metadata.
         return false;
-    }
-    if is_artifact_family_dynamic_library(bcx, unit) {
-        return true;
     }
     if bcx.gctx.cli_unstable().build_dir_new_layout {
         // These always use metadata.

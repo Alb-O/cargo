@@ -27,7 +27,7 @@ use clap_complete::ArgValueCandidates;
 use home::cargo_home_with_cwd;
 use itertools::Itertools;
 use semver::Version;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::path::PathBuf;
@@ -297,14 +297,6 @@ pub trait CommandExt: Sized {
                 "Do not activate the `default` feature",
             )
             .help_heading(heading::FEATURE_SELECTION),
-        )
-        ._arg(
-            multi_opt(
-                "without-artifact-family",
-                "NAME",
-                "Disable a configured artifact family for this build",
-            )
-            .help_heading(heading::COMPILATION_OPTIONS),
         )
     }
 
@@ -841,10 +833,6 @@ Run `{cmd}` to see possible targets."
         let opts = CompileOptions {
             build_config,
             cli_features: self.cli_features()?,
-            without_artifact_families: self
-                ._values_of("without-artifact-family")
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
             spec,
             filter: CompileFilter::from_raw_arguments(
                 self.flag("lib"),

@@ -28,21 +28,6 @@ use super::StringList;
 use super::Value;
 use super::path::ConfigRelativePath;
 
-/// A declarative heavy dependency subgraph retained across compatible workspaces.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub struct CargoArtifactFamilyConfig {
-    pub trigger_dependency: String,
-    pub scope_package: String,
-    #[serde(default)]
-    pub activate_dependency_features: Vec<String>,
-    #[serde(default)]
-    pub profiles: Vec<String>,
-    #[serde(default)]
-    pub host_target_only: bool,
-    pub environment_manifest: ConfigRelativePath,
-}
-
 /// The `[http]` table.
 ///
 /// Example configuration:

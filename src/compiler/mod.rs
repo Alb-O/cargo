@@ -276,9 +276,6 @@ fn rustc(
     exec: &Arc<dyn Executor>,
 ) -> CargoResult<Work> {
     let mut rustc = prepare_rustc(build_runner, unit)?;
-    if let Some(family) = build_runner.bcx.artifact_family(unit) {
-        crate::artifact_family::apply_environment(family, &mut rustc)?;
-    }
 
     let name = unit.pkg.name();
 
@@ -973,9 +970,6 @@ fn prepare_rustdoc(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> CargoResu
 /// Creates a unit of work invoking `rustdoc` for documenting the `unit`.
 fn rustdoc(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<Work> {
     let mut rustdoc = prepare_rustdoc(build_runner, unit)?;
-    if let Some(family) = build_runner.bcx.artifact_family(unit) {
-        crate::artifact_family::apply_environment(family, &mut rustdoc)?;
-    }
 
     let crate_name = unit.target.crate_name();
     let is_json_output = build_runner.bcx.build_config.intent.wants_doc_json_output();
