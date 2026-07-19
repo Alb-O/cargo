@@ -18,7 +18,21 @@ pub struct OutputRecord {
     package: String,
     unit: String,
     last_used: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
     paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct CleanReport {
+    pub removed: Vec<PathBuf>,
+    pub removed_bytes: u64,
+}
+
+struct StoredOutput {
+    path: PathBuf,
+    record: OutputRecord,
+    measured: bool,
 }
 
 #[derive(Deserialize)]
@@ -41,6 +55,7 @@ pub fn record(
         package: package.to_owned(),
         unit: unit.clone(),
         last_used: now(),
+        size: None,
         paths: output_paths,
     };
     let path = record_path(build_root, package, &unit);
@@ -68,15 +83,17 @@ pub fn touch(build_root: &Path, package: &str, unit: impl ToString) -> CargoResu
     paths::write_atomic(path, serde_json::to_vec(&record)?)
 }
 
-pub fn clean_expired(
+pub fn clean(
     build_root: &Path,
     target_root: &Path,
-    max_age: Duration,
+    max_age: Option<Duration>,
+    max_size: Option<u64>,
     dry_run: bool,
-) -> CargoResult<Vec<PathBuf>> {
+) -> CargoResult<CleanReport> {
     let output_root = build_root.join(".input-variants/v1/outputs");
-    let cutoff = now().saturating_sub(max_age.as_secs());
+    let cutoff = max_age.map(|max_age| now().saturating_sub(max_age.as_secs()));
     let mut removed = Vec::new();
+    let mut outputs = Vec::new();
     for path in json_files(&output_root)? {
         let record = paths::read_bytes(&path)
             .ok()
@@ -87,19 +104,52 @@ pub fn clean_expired(
             }
             continue;
         };
-        if record.last_used > cutoff {
-            continue;
-        }
         validate_paths(&record.paths, &[build_root, target_root])?;
-        for owned in &record.paths {
-            removed.push(owned.clone());
-            if !dry_run {
-                remove_path_if_exists(owned)?;
+        outputs.push(StoredOutput {
+            path,
+            record,
+            measured: false,
+        });
+    }
+    outputs.sort_by(|a, b| {
+        a.record
+            .last_used
+            .cmp(&b.record.last_used)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    let mut retained_bytes = 0u64;
+    if max_size.is_some() {
+        for output in &mut outputs {
+            if output.record.size.is_none() {
+                output.record.size = Some(output_size(&output.record.paths)?);
+                output.measured = true;
             }
+            retained_bytes = retained_bytes.saturating_add(output.record.size.unwrap());
         }
-        removed.push(path.clone());
-        if !dry_run {
-            remove_file_if_exists(&path)?;
+    }
+    let mut removed_bytes = 0u64;
+    for output in outputs {
+        let expired = cutoff.is_some_and(|cutoff| output.record.last_used <= cutoff);
+        let oversized = max_size.is_some_and(|max_size| retained_bytes > max_size);
+        if expired || oversized {
+            let size = output
+                .record
+                .size
+                .map_or_else(|| output_size(&output.record.paths), Ok)?;
+            retained_bytes = retained_bytes.saturating_sub(size);
+            removed_bytes = removed_bytes.saturating_add(size);
+            for owned in &output.record.paths {
+                removed.push(owned.clone());
+                if !dry_run {
+                    remove_path_if_exists(owned)?;
+                }
+            }
+            removed.push(output.path.clone());
+            if !dry_run {
+                remove_file_if_exists(&output.path)?;
+            }
+        } else if output.measured && !dry_run {
+            paths::write_atomic(output.path, serde_json::to_vec(&output.record)?)?;
         }
     }
     let records_root = build_root.join(".input-variants/v1/records");
@@ -108,7 +158,10 @@ pub fn clean_expired(
             .ok()
             .and_then(|bytes| serde_json::from_slice::<LastUsedRecord>(&bytes).ok());
         let expired = match record {
-            Some(record) => record.version != FORMAT_VERSION || record.last_used <= cutoff,
+            Some(record) => {
+                record.version != FORMAT_VERSION
+                    || cutoff.is_some_and(|cutoff| record.last_used <= cutoff)
+            }
             None => true,
         };
         if expired {
@@ -118,7 +171,51 @@ pub fn clean_expired(
             }
         }
     }
-    Ok(removed)
+    Ok(CleanReport {
+        removed,
+        removed_bytes,
+    })
+}
+
+fn output_size(output_paths: &[PathBuf]) -> CargoResult<u64> {
+    let mut paths = output_paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths.dedup();
+    let mut roots = Vec::new();
+    for path in paths {
+        if !roots.iter().any(|root: &&Path| path.starts_with(root)) {
+            roots.push(path);
+        }
+    }
+    roots.into_iter().try_fold(0u64, |total, path| {
+        let size = path_size(path)?;
+        Ok(total.saturating_add(size))
+    })
+}
+
+fn path_size(path: &Path) -> CargoResult<u64> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read `{}`", path.display()));
+        }
+    };
+    if !metadata.is_dir() {
+        return Ok(metadata.len());
+    }
+    walkdir::WalkDir::new(path)
+        .into_iter()
+        .try_fold(0u64, |total, entry| -> CargoResult<u64> {
+            let metadata = entry?.metadata()?;
+            Ok(if metadata.is_file() {
+                total.saturating_add(metadata.len())
+            } else {
+                total
+            })
+        })
+        .with_context(|| format!("failed to walk `{}`", path.display()))
 }
 
 fn json_files(root: &Path) -> CargoResult<Vec<PathBuf>> {
@@ -198,7 +295,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use super::{OutputRecord, clean_expired, record, record_path, validate_paths};
+    use super::{OutputRecord, clean, record, record_path, validate_paths};
 
     #[test]
     fn output_paths_must_stay_below_a_configured_root() {
@@ -230,13 +327,97 @@ mod tests {
         output_record.last_used = 0;
         fs::write(&record_path, serde_json::to_vec(&output_record).unwrap()).unwrap();
 
-        let reported = clean_expired(&build, &target, Duration::ZERO, true).unwrap();
-        assert!(reported.contains(&expired_output));
+        let reported = clean(
+            &build,
+            &target,
+            Some(Duration::ZERO),
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(reported.removed.contains(&expired_output));
         assert!(expired_output.exists());
         assert!(record_path.exists());
 
-        clean_expired(&build, &target, Duration::ZERO, false).unwrap();
+        clean(
+            &build,
+            &target,
+            Some(Duration::ZERO),
+            None,
+            false,
+        )
+        .unwrap();
         assert!(!expired_output.exists());
         assert!(!record_path.exists());
+    }
+
+    #[test]
+    fn size_limit_removes_least_recently_used_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let build = root.path().join("build");
+        let target = root.path().join("target");
+        let old_output = target.join("debug/deps/old");
+        let new_output = target.join("debug/deps/new");
+        fs::create_dir_all(old_output.parent().unwrap()).unwrap();
+        fs::write(&old_output, b"old!").unwrap();
+        fs::write(&new_output, b"newest").unwrap();
+        record(
+            &build,
+            "package",
+            "old",
+            vec![old_output.clone()],
+            &[&build, &target],
+        )
+        .unwrap();
+        record(
+            &build,
+            "package",
+            "new",
+            vec![new_output.clone()],
+            &[&build, &target],
+        )
+        .unwrap();
+        for (unit, last_used) in [("old", 1), ("new", 2)] {
+            let path = record_path(&build, "package", unit);
+            let mut output_record: OutputRecord =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            output_record.last_used = last_used;
+            fs::write(path, serde_json::to_vec(&output_record).unwrap()).unwrap();
+        }
+
+        let reported = clean(&build, &target, None, Some(6), true).unwrap();
+        assert_eq!(reported.removed_bytes, 4);
+        assert!(reported.removed.contains(&old_output));
+        assert!(old_output.exists());
+        assert!(new_output.exists());
+
+        clean(&build, &target, None, Some(6), false).unwrap();
+        assert!(!old_output.exists());
+        assert!(new_output.exists());
+    }
+
+    #[test]
+    fn record_size_is_measured_without_counting_nested_paths_twice() {
+        let root = tempfile::tempdir().unwrap();
+        let build = root.path().join("build");
+        let target = root.path().join("target");
+        let output_dir = target.join("debug/incremental/unit");
+        let output_file = output_dir.join("cache.bin");
+        fs::create_dir_all(&output_dir).unwrap();
+        fs::write(&output_file, b"cache").unwrap();
+        record(
+            &build,
+            "package",
+            "unit",
+            vec![output_dir, output_file],
+            &[&build, &target],
+        )
+        .unwrap();
+        let path = record_path(&build, "package", "unit");
+
+        clean(&build, &target, None, Some(5), false).unwrap();
+        let output_record: OutputRecord =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(output_record.size, Some(5));
     }
 }

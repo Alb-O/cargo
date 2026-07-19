@@ -38,6 +38,12 @@ pub fn cli() -> Command {
                 .about("Clean retained compilation variants")
                 .arg_silent_suggestion()
                 .arg_dry_run("Display what would be deleted without deleting anything")
+                .group(
+                    clap::ArgGroup::new("retention")
+                        .args(["max-age", "max-size"])
+                        .multiple(true)
+                        .required(true),
+                )
                 .arg(
                     opt("build-dir", "Cargo build directory containing variant records")
                         .value_name("PATH")
@@ -51,8 +57,15 @@ pub fn cli() -> Command {
                 .arg(
                     opt("max-age", "Delete variants unused for the given age")
                         .value_name("DURATION")
-                        .value_parser(parse_time_span)
-                        .required(true),
+                        .value_parser(parse_time_span),
+                )
+                .arg(
+                    opt(
+                        "max-size",
+                        "Delete least recently used variants until retained outputs are under the given size",
+                    )
+                    .value_name("SIZE")
+                    .value_parser(parse_human_size),
                 ),
         )
         .subcommand(
@@ -204,9 +217,8 @@ fn clean_variants(gctx: &GlobalContext, args: &ArgMatches) -> CliResult {
     let target_dir = args
         .value_of_path("target-dir", gctx)
         .expect("required --target-dir");
-    let max_age = *args
-        .get_one::<Duration>("max-age")
-        .expect("required --max-age");
+    let max_age = args.get_one::<Duration>("max-age").copied();
+    let max_size = args.get_one::<u64>("max-size").copied();
     let build_root = cargo::util::Filesystem::new(build_dir.clone());
     let target_root = cargo::util::Filesystem::new(target_dir.clone());
     let _build_lock = build_root.open_rw_exclusive_create(
@@ -223,14 +235,22 @@ fn clean_variants(gctx: &GlobalContext, args: &ArgMatches) -> CliResult {
             "retained input variants",
         )?)
     };
-    let removed = cargo::compiler::input_variants::outputs::clean_expired(
+    let report = cargo::compiler::input_variants::outputs::clean(
         &build_dir,
         &target_dir,
         max_age,
+        max_size,
         args.dry_run(),
     )?;
     let action = if args.dry_run() { "Would remove" } else { "Removed" };
-    gctx.shell().status(action, format!("{} retained variant paths", removed.len()))?;
+    gctx.shell().status(
+        action,
+        format!(
+            "{} retained variant paths ({:.1})",
+            report.removed.len(),
+            cargo::util::HumanBytes(report.removed_bytes)
+        ),
+    )?;
     Ok(())
 }
 
