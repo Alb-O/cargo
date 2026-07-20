@@ -1836,8 +1836,9 @@ fn calculate_normal(
     }
     .to_vec();
 
+    let effective_profile = build_runner.effective_profile(unit)?;
     let profile_hash = util::hash_u64((
-        &unit.profile,
+        effective_profile.as_ref(),
         unit.mode,
         build_runner.bcx.extra_args_for(unit),
         build_runner.lto[unit],

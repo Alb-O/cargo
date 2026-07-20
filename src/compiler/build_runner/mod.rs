@@ -1,6 +1,7 @@
 //! [`BuildRunner`] is the mutable state used during the build process.
 
 use crate::util::data_structures::{HashMap, HashSet};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -10,6 +11,7 @@ use crate::compiler::{self, Unit, UserIntent, artifact};
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::errors::CargoResult;
 use crate::workspace::PackageId;
+use crate::workspace::profiles::{Lto as ProfileLto, Profile};
 use anyhow::{Context as _, bail};
 use cargo_util::paths;
 use cargo_util_terminal::report::{Level, Message};
@@ -646,6 +648,48 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
 
     pub fn is_primary_package(&self, unit: &Unit) -> bool {
         self.primary_packages.contains(&unit.pkg.package_id())
+    }
+
+    /// Returns the profile Cargo will actually translate into compiler flags for `unit`.
+    ///
+    /// Some settings refine a profile after the unit graph is built. In particular, `build.primary-codegen-backend` applies when a package is selected directly, but not when that same package is compiled as a dependency. Both forms can share a build directory, so compiler arguments, artifact metadata, and freshness fingerprints must derive from this same effective profile.
+    pub(crate) fn effective_profile<'unit>(
+        &self,
+        unit: &'unit Unit,
+    ) -> CargoResult<Cow<'unit, Profile>> {
+        let native_target = match unit.kind {
+            CompileKind::Host => true,
+            CompileKind::Target(target) => target.rustc_target() == self.bcx.host_triple(),
+        };
+        let lto_enabled = !matches!(unit.profile.lto, ProfileLto::Bool(false) | ProfileLto::Off);
+        let backend_eligible_mode =
+            matches!(unit.mode, CompileMode::Build | CompileMode::Check { test: false });
+        if unit.profile.codegen_backend.is_some()
+            || !self.is_primary_package(unit)
+            || !backend_eligible_mode
+            || !native_target
+            || lto_enabled
+            || self
+                .bcx
+                .gctx
+                .get_env_os("RUSTC_WORKSPACE_WRAPPER")
+                .and_then(|wrapper| Path::new(wrapper).file_stem())
+                == Some(std::ffi::OsStr::new("clippy-driver"))
+        {
+            return Ok(Cow::Borrowed(&unit.profile));
+        }
+        let Some(codegen_backend) = self
+            .bcx
+            .gctx
+            .build_config()?
+            .primary_codegen_backend
+            .as_deref()
+        else {
+            return Ok(Cow::Borrowed(&unit.profile));
+        };
+        let mut profile = unit.profile.clone();
+        profile.codegen_backend = Some(codegen_backend.into());
+        Ok(Cow::Owned(profile))
     }
 
     /// Returns a [`UnitOutput`] which represents some information about the

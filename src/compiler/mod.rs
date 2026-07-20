@@ -110,7 +110,7 @@ use crate::util::interning::InternedString;
 use crate::util::machine_message::{self, Message};
 use crate::util::{add_path_args, internal, path_args};
 use crate::workspace::manifest::TargetSourcePath;
-use crate::workspace::profiles::{Lto as ProfileLto, PanicStrategy, Profile, StripInner};
+use crate::workspace::profiles::{PanicStrategy, Profile, StripInner};
 use crate::workspace::{Feature, PackageId, Target};
 
 use cargo_util::{ProcessBuilder, ProcessError, paths};
@@ -1257,31 +1257,7 @@ fn build_base_args(
         trim_paths,
         hint_mostly_unused: profile_hint_mostly_unused,
         ..
-    } = unit.profile.clone();
-    let native_target = match unit.kind {
-        CompileKind::Host => true,
-        CompileKind::Target(target) => target.rustc_target() == bcx.host_triple(),
-    };
-    let lto_enabled = !matches!(unit.profile.lto, ProfileLto::Bool(false) | ProfileLto::Off);
-    let codegen_backend = if codegen_backend.is_some()
-        || !build_runner.is_primary_package(unit)
-        || unit.mode.is_any_test()
-        || !native_target
-        || lto_enabled
-        || bcx
-            .gctx
-            .get_env_os("RUSTC_WORKSPACE_WRAPPER")
-            .and_then(|wrapper| Path::new(wrapper).file_stem())
-            == Some(OsStr::new("clippy-driver"))
-    {
-        codegen_backend
-    } else {
-        bcx.gctx
-            .build_config()?
-            .primary_codegen_backend
-            .as_deref()
-            .map(InternedString::from)
-    };
+    } = build_runner.effective_profile(unit)?.into_owned();
     let hints = unit.pkg.hints().cloned().unwrap_or_default();
     let test = unit.mode.is_any_test();
 

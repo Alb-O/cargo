@@ -6351,6 +6351,47 @@ fn primary_codegen_backend_only_applies_to_primary_native_units() {
 }
 
 #[cargo_test]
+fn primary_codegen_backend_is_part_of_artifact_identity() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["app", "text"]
+                resolver = "2"
+            "#,
+        )
+        .file(
+            "app/Cargo.toml",
+            r#"
+                [package]
+                name = "app"
+                version = "0.1.0"
+
+                [dependencies]
+                text = { path = "../text" }
+            "#,
+        )
+        .file("app/src/main.rs", "fn main() { text::shape(); }")
+        .file("text/Cargo.toml", &basic_lib_manifest("text"))
+        .file("text/src/lib.rs", "pub fn shape() {}")
+        .build();
+
+    p.cargo(r#"build -p text --config 'build.primary-codegen-backend="llvm"'"#)
+        .run();
+    p.cargo(r#"build -v -p app --config 'build.primary-codegen-backend="llvm"'"#)
+        .with_stderr_contains("[COMPILING] text v0.5.0 ([ROOT]/foo/text)")
+        .with_stderr_contains("[RUNNING] `rustc --crate-name text [..]")
+        .with_stderr_does_not_contain(
+            "[RUNNING] `rustc --crate-name text [..]codegen-backend[..]",
+        )
+        .run();
+    p.cargo(r#"build -v -p text --config 'build.primary-codegen-backend="llvm"'"#)
+        .with_stderr_contains("[FRESH] text v0.5.0 ([ROOT]/foo/text)")
+        .run();
+}
+
+#[cargo_test]
 fn primary_codegen_backend_skips_lto_profiles() {
     let p = project()
         .file(

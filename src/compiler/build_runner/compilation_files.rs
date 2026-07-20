@@ -24,7 +24,8 @@ use crate::workspace::{Target, TargetKind, Workspace};
 /// cause a new hash due to the rustc version changing, but this allows
 /// cargo to be extra careful to deal with different versions of cargo that
 /// use the same rustc version.
-const METADATA_VERSION: u8 = 2;
+// The metadata version scopes artifact hashes to the identity schema. Version 3 includes the selected codegen backend, so artifacts from an older schema cannot be reused ambiguously.
+const METADATA_VERSION: u8 = 3;
 
 /// Uniquely identify a [`Unit`] under specific circumstances, see [`Metadata`] for more.
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -843,7 +844,10 @@ fn compute_metadata(
     // Throw in the profile we're compiling with. This helps caching
     // `panic=abort` and `panic=unwind` artifacts, additionally with various
     // settings like debuginfo and whatnot.
-    unit.profile.hash(&mut shared_hasher);
+    build_runner
+        .effective_profile(unit)?
+        .as_ref()
+        .hash(&mut shared_hasher);
     unit.mode.hash(&mut shared_hasher);
     build_runner.lto[unit].hash(&mut shared_hasher);
 
