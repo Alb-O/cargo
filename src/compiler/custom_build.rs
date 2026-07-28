@@ -473,7 +473,7 @@ fn build_work(
         cmd.env_remove("RUSTC_WRAPPER");
     }
     cmd.env_remove("RUSTC_WORKSPACE_WRAPPER");
-    if build_runner.bcx.ws.is_member(&unit.pkg) {
+    if build_runner.uses_rustc_workspace_wrapper(unit) {
         if let Some(wrapper) = bcx.rustc().workspace_wrapper.as_ref() {
             cmd.env("RUSTC_WORKSPACE_WRAPPER", wrapper);
         }

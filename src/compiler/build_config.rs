@@ -33,6 +33,8 @@ pub struct BuildConfig {
     pub dry_run: bool,
     /// An optional override of the rustc process for primary units
     pub primary_unit_rustc: Option<ProcessBuilder>,
+    /// Restrict the configured workspace rustc wrapper to primary units.
+    pub rustc_workspace_wrapper_primary_only: bool,
     /// A thread used by `cargo fix` to receive messages on a socket regarding
     /// the success/failure of applying fixes.
     pub rustfix_diagnostic_server: Rc<RefCell<Option<RustfixDiagnosticServer>>>,
@@ -124,6 +126,9 @@ impl BuildConfig {
             unit_graph: false,
             dry_run: false,
             primary_unit_rustc: None,
+            rustc_workspace_wrapper_primary_only: cfg
+                .rustc_workspace_wrapper_primary_only
+                .unwrap_or(false),
             rustfix_diagnostic_server: Rc::new(RefCell::new(None)),
             export_dir: None,
             future_incompat_report: false,

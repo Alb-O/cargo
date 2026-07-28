@@ -773,11 +773,11 @@ where
 fn prepare_rustc(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<ProcessBuilder> {
     let gctx = build_runner.bcx.gctx;
     let is_primary = build_runner.is_primary_package(unit);
-    let is_workspace = build_runner.bcx.ws.is_member(&unit.pkg);
+    let use_workspace_wrapper = build_runner.uses_rustc_workspace_wrapper(unit);
 
     let mut base = build_runner
         .compilation
-        .rustc_process(unit, is_primary, is_workspace)?;
+        .rustc_process(unit, is_primary, use_workspace_wrapper)?;
     build_base_args(build_runner, &mut base, unit)?;
     if unit.pkg.manifest().is_embedded() {
         if !gctx.cli_unstable().script {

@@ -27,6 +27,9 @@ use crate::workspace::{Target, TargetKind, Workspace};
 // The metadata version scopes artifact hashes to the identity schema. Version 3 includes the selected codegen backend, so artifacts from an older schema cannot be reused ambiguously.
 const METADATA_VERSION: u8 = 3;
 
+// Version save-temps artifacts separately so cache entries created before wrappers preserved rustc auxiliaries cannot be reused.
+const SAVE_TEMPS_METADATA_VERSION: u8 = 1;
+
 /// Uniquely identify a [`Unit`] under specific circumstances, see [`Metadata`] for more.
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct UnitHash(u64);
@@ -850,6 +853,19 @@ fn compute_metadata(
         .hash(&mut shared_hasher);
     unit.mode.hash(&mut shared_hasher);
     build_runner.lto[unit].hash(&mut shared_hasher);
+    let extra_args = build_runner
+        .bcx
+        .extra_args_for(unit)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let compiler_args = if unit.mode.is_doc() || unit.mode.is_doc_scrape() {
+        &unit.rustdocflags
+    } else {
+        &unit.rustflags
+    };
+    if has_save_temps(extra_args) || has_save_temps(compiler_args) {
+        SAVE_TEMPS_METADATA_VERSION.hash(&mut shared_hasher);
+    }
 
     // Artifacts compiled for the host should have a different
     // metadata piece than those compiled for the target, so make sure
@@ -865,7 +881,7 @@ fn compute_metadata(
 
     hash_rustc_version(bcx, &mut shared_hasher, unit);
 
-    if build_runner.bcx.ws.is_member(&unit.pkg) {
+    if build_runner.uses_rustc_workspace_wrapper(unit) {
         // This is primarily here for clippy. This ensures that the clippy
         // artifacts are separate from the `check` ones.
         if let Some(path) = &build_runner.bcx.rustc().workspace_wrapper {
@@ -930,20 +946,10 @@ fn compute_metadata(
     // Avoid trashing the caches on RUSTFLAGS changing via `unit_id`
     //
     // Limited to `unit_id` to help with reproducible build / PGO issues.
-    let extra_args = build_runner
-        .bcx
-        .extra_args_for(unit)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
     if !has_remap_path_prefix(extra_args) {
         extra_args.hash(&mut unit_id_hasher);
         extra_args.hash(&mut input_schema_hasher);
     }
-    let compiler_args = if unit.mode.is_doc() || unit.mode.is_doc_scrape() {
-        &unit.rustdocflags
-    } else {
-        &unit.rustflags
-    };
     if !has_remap_path_prefix(compiler_args) {
         compiler_args.hash(&mut unit_id_hasher);
         compiler_args.hash(&mut input_schema_hasher);
@@ -1012,6 +1018,18 @@ fn compute_metadata(
 fn has_remap_path_prefix(args: &[String]) -> bool {
     args.iter()
         .any(|s| s.starts_with("--remap-path-prefix=") || s == "--remap-path-prefix")
+}
+
+fn has_save_temps(args: &[String]) -> bool {
+    args.iter().enumerate().any(|(index, arg)| {
+        let value = match arg.as_str() {
+            "-C" | "--codegen" => args.get(index + 1).map(String::as_str),
+            arg => arg
+                .strip_prefix("-C")
+                .or_else(|| arg.strip_prefix("--codegen=")),
+        };
+        value.is_some_and(|value| value == "save-temps" || value.starts_with("save-temps="))
+    })
 }
 
 /// Hash the version of rustc being used during the build process.
@@ -1174,4 +1192,23 @@ fn use_pkg_dir(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_save_temps;
+
+    #[test]
+    fn detects_save_temps_codegen_forms() {
+        for args in [
+            ["-Csave-temps=true"].as_slice(),
+            ["-C", "save-temps=yes"].as_slice(),
+            ["--codegen=save-temps"].as_slice(),
+            ["--codegen", "save-temps=true"].as_slice(),
+        ] {
+            let args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
+            assert!(has_save_temps(&args));
+        }
+        assert!(!has_save_temps(&["-Copt-level=2".into()]));
+    }
 }

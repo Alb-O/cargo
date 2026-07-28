@@ -650,6 +650,12 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
         self.primary_packages.contains(&unit.pkg.package_id())
     }
 
+    pub fn uses_rustc_workspace_wrapper(&self, unit: &Unit) -> bool {
+        self.bcx.ws.is_member(&unit.pkg)
+            && (!self.bcx.build_config.rustc_workspace_wrapper_primary_only
+                || self.is_primary_package(unit))
+    }
+
     /// Returns the profile Cargo will actually translate into compiler flags for `unit`.
     ///
     /// Some settings refine a profile after the unit graph is built. In particular, `build.primary-codegen-backend` applies when a package is selected directly, but not when that same package is compiled as a dependency. Both forms can share a build directory, so compiler arguments, artifact metadata, and freshness fingerprints must derive from this same effective profile.
