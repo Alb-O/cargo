@@ -1040,43 +1040,6 @@ fn rustc_workspace_wrapper_respects_primary_units() {
 }
 
 #[cargo_test]
-fn rustc_workspace_wrapper_can_be_limited_to_primary_units() {
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [workspace]
-                members = ["app", "dependency"]
-            "#,
-        )
-        .file(
-            "app/Cargo.toml",
-            r#"
-                [package]
-                name = "app"
-                version = "0.1.0"
-
-                [dependencies]
-                dependency = { path = "../dependency" }
-            "#,
-        )
-        .file("app/src/lib.rs", "pub fn app() { dependency::dependency(); }")
-        .file("dependency/Cargo.toml", &basic_manifest("dependency", "0.1.0"))
-        .file("dependency/src/lib.rs", "pub fn dependency() {}")
-        .build();
-
-    p.cargo("check -p app")
-        .env("RUSTC_WORKSPACE_WRAPPER", tools::echo_wrapper())
-        .env(
-            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER_PRIMARY_ONLY",
-            "true",
-        )
-        .with_stderr_contains("WRAPPER CALLED: rustc --crate-name app [..]")
-        .with_stderr_does_not_contain("WRAPPER CALLED: rustc --crate-name dependency [..]")
-        .run();
-}
-
-#[cargo_test]
 fn rustc_workspace_wrapper_excludes_published_deps() {
     let p = project()
         .file(

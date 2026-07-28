@@ -210,16 +210,16 @@ impl<'gctx> Compilation<'gctx> {
     /// was selected by the user on the command-line (such as with a `-p`
     /// flag), see [`crate::compiler::BuildRunner::primary_packages`].
     ///
-    /// `use_workspace_wrapper` is true if this unit is in scope for the configured workspace wrapper.
+    /// `is_workspace` is true if this is a workspace member.
     pub fn rustc_process(
         &self,
         unit: &Unit,
         is_primary: bool,
-        use_workspace_wrapper: bool,
+        is_workspace: bool,
     ) -> CargoResult<ProcessBuilder> {
         let mut rustc = if is_primary && self.primary_rustc_process.is_some() {
             self.primary_rustc_process.clone().unwrap()
-        } else if use_workspace_wrapper {
+        } else if is_workspace {
             self.rustc_workspace_wrapper_process.clone()
         } else {
             self.rustc_process.clone()

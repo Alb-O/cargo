@@ -881,7 +881,7 @@ fn compute_metadata(
 
     hash_rustc_version(bcx, &mut shared_hasher, unit);
 
-    if build_runner.uses_rustc_workspace_wrapper(unit) {
+    if build_runner.bcx.ws.is_member(&unit.pkg) {
         // This is primarily here for clippy. This ensures that the clippy
         // artifacts are separate from the `check` ones.
         if let Some(path) = &build_runner.bcx.rustc().workspace_wrapper {

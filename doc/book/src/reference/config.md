@@ -518,13 +518,6 @@ wrapper are cached separately.
 If both `rustc-wrapper` and `rustc-workspace-wrapper` are set, then they will be nested:
 the final invocation is `$RUSTC_WRAPPER $RUSTC_WORKSPACE_WRAPPER $RUSTC`.
 
-#### `build.rustc-workspace-wrapper-primary-only` (fork extension)
-* Type: boolean
-* Default: false
-* Environment: `CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER_PRIMARY_ONLY`
-
-Restricts `rustc-workspace-wrapper` to primary packages selected by the command line. This is useful for target-specific instrumentation in open workspaces where local dependencies are also workspace members.
-
 #### `build.rustdoc`
 * Type: string (program path)
 * Default: `"rustdoc"`

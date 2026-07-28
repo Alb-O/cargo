@@ -210,7 +210,6 @@ pub struct CargoBuildConfig {
     pub rustdocflags: Option<StringList>,
     pub rustc_wrapper: Option<ConfigRelativePath>,
     pub rustc_workspace_wrapper: Option<ConfigRelativePath>,
-    pub rustc_workspace_wrapper_primary_only: Option<bool>,
     pub primary_codegen_backend: Option<String>,
     pub rustc: Option<ConfigRelativePath>,
     pub rustdoc: Option<ConfigRelativePath>,
