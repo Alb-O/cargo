@@ -157,20 +157,35 @@ fn accumulate_lockfile_packages(
     qualify_dependency_ids(&mut previous_packages)?;
     qualify_dependency_ids(&mut current_packages)?;
 
-    let mut packages = previous_packages
+    let mut packages = current_packages
         .into_iter()
         .map(|package| (lock_package_key(&package), package))
         .collect::<BTreeMap<_, _>>();
-    packages.extend(
-        current_packages
-            .into_iter()
-            .map(|package| (lock_package_key(&package), package)),
-    );
+    for previous in previous_packages {
+        let key = lock_package_key(&previous);
+        if let Some(current) = packages.get_mut(&key) {
+            // Open members can activate disjoint optional dependencies on the same package, so retain every observed edge.
+            accumulate_dependencies(&mut current.dependencies, previous.dependencies);
+        } else {
+            packages.insert(key, previous);
+        }
+    }
 
     let mut packages = packages.into_values().collect::<Vec<_>>();
     compact_dependency_ids(&mut packages);
     current.package = Some(packages);
     Ok(current)
+}
+
+fn accumulate_dependencies(
+    current: &mut Option<Vec<TomlLockfilePackageId>>,
+    previous: Option<Vec<TomlLockfilePackageId>>,
+) {
+    let mut dependencies = current.take().unwrap_or_default();
+    dependencies.extend(previous.unwrap_or_default());
+    dependencies.sort_unstable();
+    dependencies.dedup();
+    *current = (!dependencies.is_empty()).then_some(dependencies)
 }
 
 type LockPackageKey = (String, String, Option<String>);

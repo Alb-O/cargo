@@ -608,6 +608,74 @@ fn open_membership_accumulates_discovered_member_locks() {
 }
 
 #[cargo_test]
+fn open_membership_accumulates_feature_dependency_edges() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = []
+                open-membership = true
+                resolver = "3"
+            "#,
+        )
+        .file(
+            "dynamic-a/Cargo.toml",
+            r#"
+                [package]
+                name = "dynamic-a"
+                version = "0.1.0"
+                edition = "2024"
+
+                [dependencies]
+                shared = { path = "../shared", features = ["a"] }
+            "#,
+        )
+        .file("dynamic-a/src/lib.rs", "pub fn dynamic() { shared::shared(); }")
+        .file(
+            "dynamic-b/Cargo.toml",
+            r#"
+                [package]
+                name = "dynamic-b"
+                version = "0.1.0"
+                edition = "2024"
+
+                [dependencies]
+                shared = { path = "../shared", features = ["b"] }
+            "#,
+        )
+        .file("dynamic-b/src/lib.rs", "pub fn dynamic() { shared::shared(); }")
+        .file(
+            "shared/Cargo.toml",
+            r#"
+                [package]
+                name = "shared"
+                version = "0.1.0"
+                edition = "2024"
+
+                [features]
+                a = ["dep-a"]
+                b = ["dep-b"]
+
+                [dependencies]
+                dep-a = { path = "../dep-a", optional = true }
+                dep-b = { path = "../dep-b", optional = true }
+            "#,
+        )
+        .file("shared/src/lib.rs", "pub fn shared() {}")
+        .file("dep-a/Cargo.toml", &basic_manifest("dep-a", "0.1.0"))
+        .file("dep-a/src/lib.rs", "pub fn dep() {}")
+        .file("dep-b/Cargo.toml", &basic_manifest("dep-b", "0.1.0"))
+        .file("dep-b/src/lib.rs", "pub fn dep() {}")
+        .build();
+
+    p.cargo("check").cwd("dynamic-a").run();
+    p.cargo("check").cwd("dynamic-b").run();
+    p.cargo("check --locked").cwd("dynamic-a").run();
+    p.cargo("check --locked").cwd("dynamic-b").run();
+}
+
+#[cargo_test]
 fn open_membership_accumulated_lock_disambiguates_versions() {
     Package::new("shared", "1.0.0").publish();
     Package::new("shared", "2.0.0").publish();
