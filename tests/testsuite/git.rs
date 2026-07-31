@@ -3275,6 +3275,255 @@ fn git_fetch_cli_env_clean() {
         .run();
 }
 
+#[cargo_test(requires = "git")]
+fn git_fetch_cli_error_suggests_libgit2() {
+    let git_dep = git::new("dep1", |project| {
+        project
+            .file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
+            .file("src/lib.rs", "")
+    });
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "foo"
+                    version = "0.1.0"
+                    edition = "2015"
+
+                    [dependencies]
+                    dep1 = {{ git = '{}/missing' }}
+                "#,
+                git_dep.url()
+            ),
+        )
+        .file("src/lib.rs", "")
+        .file(
+            ".cargo/config.toml",
+            r#"
+                [net]
+                git-fetch-with-cli = true
+                retry = 0
+            "#,
+        )
+        .build();
+
+    p.cargo("fetch")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `[ROOTURL]/dep1/missing`
+fatal: '[ROOT]/dep1/missing' does not appear to be a git repository
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+[ERROR] failed to get `dep1` as a dependency of package `foo v0.1.0 ([ROOT]/foo)`
+
+Caused by:
+  failed to load source for dependency `dep1`
+
+Caused by:
+  unable to update [ROOTURL]/dep1/missing
+
+Caused by:
+  failed to clone into: [ROOT]/home/.cargo/git/db/missing-[HASH]
+
+Caused by:
+  process didn't exit successfully: `git fetch [..]` ([EXIT_STATUS]: 128)
+
+  [HELP] re-try with `net.git-fetch-with-cli = false` to see if it resolves the problem
+  https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
+
+"#]])
+        .run();
+}
+
+/// See https://nesbitt.io/2026/07/21/end-of-options.html
+#[cargo_test(requires = "git")]
+fn git_cli_arg_injection_via_dep() {
+    let project = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                    [package]
+                    name = "foo"
+                    version = "0.1.0"
+                    edition = "2015"
+                    [dependencies]
+                    dep1 = { git = '-u./payload' }
+                    "#,
+        )
+        .file(
+            "src/main.rs",
+            &main_file(r#""{}", dep1::hello()"#, &["dep1"]),
+        )
+        .file(
+            ".cargo/config.toml",
+            "
+                [net]
+                git-fetch-with-cli = true
+                ",
+        )
+        .build();
+
+    project
+        .cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
+
+Caused by:
+  invalid url `-u./payload`: relative URL without a base
+
+"#]])
+        .run();
+}
+
+/// See https://nesbitt.io/2026/07/21/end-of-options.html
+#[cargo_test(requires = "git")]
+fn git_cli_arg_injection_via_rev() {
+    let git_dep = git::new("dep1", |project| {
+        project
+            .file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
+            .file("src/lib.rs", "")
+    });
+
+    let project = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+
+                    name = "foo"
+                    version = "0.5.0"
+                    edition = "2015"
+                    authors = ["wycats@example.com"]
+
+                    [dependencies]
+                    dep1 = {{ git = '{}', rev = '-u./payload' }}
+                "#,
+                git_dep.url()
+            ),
+        )
+        .file(
+            "src/main.rs",
+            &main_file(r#""{}", dep1::hello()"#, &["dep1"]),
+        )
+        .file(
+            ".cargo/config.toml",
+            "
+                [net]
+                git-fetch-with-cli = true
+                ",
+        )
+        .build();
+
+    // Getting a libgit2 error because with a generic rev, we fetch everything and then look up later
+    project
+        .cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `[ROOTURL]/dep1`
+[ERROR] failed to get `dep1` as a dependency of package `foo v0.5.0 ([ROOT]/foo)`
+
+Caused by:
+  failed to load source for dependency `dep1`
+
+Caused by:
+  unable to update [ROOTURL]/dep1?rev=-u.%2Fpayload
+
+Caused by:
+  revspec '-u./payload' not found; class=Reference (4); code=NotFound (-3)
+
+"#]])
+        .run();
+}
+
+/// See https://nesbitt.io/2026/07/21/end-of-options.html
+#[cargo_test(requires = "git")]
+fn git_cli_arg_injection_via_branch() {
+    let git_dep = git::new("dep1", |project| {
+        project
+            .file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
+            .file("src/lib.rs", "")
+    });
+
+    let project = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+
+                    name = "foo"
+                    version = "0.5.0"
+                    edition = "2015"
+                    authors = ["wycats@example.com"]
+
+                    [dependencies]
+                    dep1 = {{ git = '{}', branch = '-u./payload' }}
+                "#,
+                git_dep.url()
+            ),
+        )
+        .file(
+            "src/main.rs",
+            &main_file(r#""{}", dep1::hello()"#, &["dep1"]),
+        )
+        .file(
+            ".cargo/config.toml",
+            "
+                [net]
+                git-fetch-with-cli = true
+                ",
+        )
+        .build();
+
+    project
+        .cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `[ROOTURL]/dep1`
+fatal: couldn't find remote ref refs/heads/-u./payload
+[WARNING] spurious network error (3 tries remaining): process didn't exit successfully: `git fetch [..]` ([EXIT_STATUS]: 128)
+
+[HELP] re-try with `net.git-fetch-with-cli = false` to see if it resolves the problem
+https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
+fatal: couldn't find remote ref refs/heads/-u./payload
+[WARNING] spurious network error (2 tries remaining): process didn't exit successfully: `git fetch [..]` ([EXIT_STATUS]: 128)
+
+[HELP] re-try with `net.git-fetch-with-cli = false` to see if it resolves the problem
+https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
+fatal: couldn't find remote ref refs/heads/-u./payload
+[WARNING] spurious network error (1 try remaining): process didn't exit successfully: `git fetch [..]` ([EXIT_STATUS]: 128)
+
+[HELP] re-try with `net.git-fetch-with-cli = false` to see if it resolves the problem
+https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
+fatal: couldn't find remote ref refs/heads/-u./payload
+[ERROR] failed to get `dep1` as a dependency of package `foo v0.5.0 ([ROOT]/foo)`
+
+Caused by:
+  failed to load source for dependency `dep1`
+
+Caused by:
+  unable to update [ROOTURL]/dep1?branch=-u.%2Fpayload
+
+Caused by:
+  failed to clone into: [ROOT]/home/.cargo/git/db/dep1-[HASH]
+
+Caused by:
+  process didn't exit successfully: `git fetch [..]` ([EXIT_STATUS]: 128)
+
+  [HELP] re-try with `net.git-fetch-with-cli = false` to see if it resolves the problem
+  https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
+
+"#]])
+        .run();
+}
+
 #[cargo_test]
 fn dirty_submodule() {
     // `cargo package` warns for dirty file in submodule.
@@ -4237,11 +4486,20 @@ fn github_fastpath_error_message() {
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `https://github.com/rust-lang/bitflags.git`
 fatal: remote [ERROR] upload-pack: not our ref 11111b376b93484341c68fbca3ca110ae5cd2790
-[WARNING] spurious network error (3 tries remaining): process didn't exit successfully: `git fetch --no-tags --force --update-head-ok [..]
+[WARNING] spurious network error (3 tries remaining): process didn't exit successfully: `git fetch --no-tags --quiet --force --update-head-ok [..]
+
+[HELP] re-try with `net.git-fetch-with-cli = false` to see if it resolves the problem
+https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
 fatal: remote [ERROR] upload-pack: not our ref 11111b376b93484341c68fbca3ca110ae5cd2790
-[WARNING] spurious network error (2 tries remaining): process didn't exit successfully: `git fetch --no-tags --force --update-head-ok [..]
+[WARNING] spurious network error (2 tries remaining): process didn't exit successfully: `git fetch --no-tags --quiet --force --update-head-ok [..]
+
+[HELP] re-try with `net.git-fetch-with-cli = false` to see if it resolves the problem
+https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
 fatal: remote [ERROR] upload-pack: not our ref 11111b376b93484341c68fbca3ca110ae5cd2790
-[WARNING] spurious network error (1 try remaining): process didn't exit successfully: `git fetch --no-tags --force --update-head-ok [..]
+[WARNING] spurious network error (1 try remaining): process didn't exit successfully: `git fetch --no-tags --quiet --force --update-head-ok [..]
+
+[HELP] re-try with `net.git-fetch-with-cli = false` to see if it resolves the problem
+https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
 fatal: remote [ERROR] upload-pack: not our ref 11111b376b93484341c68fbca3ca110ae5cd2790
 [ERROR] failed to get `bitflags` as a dependency of package `foo v0.1.0 ([ROOT]/foo)`
 
@@ -4258,7 +4516,10 @@ Caused by:
   revision 11111b376b93484341c68fbca3ca110ae5cd2790 not found
 
 Caused by:
-  process didn't exit successfully: `git fetch --no-tags --force --update-head-ok [..]
+  process didn't exit successfully: `git fetch --no-tags --quiet --force --update-head-ok [..]
+
+  [HELP] re-try with `net.git-fetch-with-cli = false` to see if it resolves the problem
+  https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
 
 "#]])
         .run();
@@ -4556,4 +4817,417 @@ Caused by:
 ...
 "#]])
         .run();
+}
+
+/// A lockfile can pin packages from one git URL at different revisions.
+/// Each package is expected be downloaded from the revision it is pinned to.
+///
+/// See rust-lang/cargo#13641.
+/// See also <https://github.com/rust-lang/cargo/pull/17275#issuecomment-5132821482>.
+#[cargo_test]
+fn lockfile_with_multiple_revisions_bump_pkg_version() {
+    // #1: the upstream workspace at rev1
+    let (upstream, upstream_repo) = git::new_repo("upstream", |p| {
+        p.file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["a"]
+            "#,
+        )
+        .file("a/Cargo.toml", &basic_manifest("a", "0.1.0"))
+        .file("a/src/lib.rs", "")
+    });
+    let rev1 = upstream_repo.head().unwrap().target().unwrap();
+
+    // #2: `foo` locks a@rev1
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "foo"
+                    version = "0.1.0"
+                    edition = "2015"
+
+                    [dependencies]
+                    a = {{ git = "{}" }}
+                "#,
+                upstream.url()
+            ),
+        )
+        .file("src/lib.rs", "")
+        .build();
+    p.cargo("fetch").run();
+    assert!(p.read_file("Cargo.lock").contains(&rev1.to_string()));
+
+    // #3: upstream add a new member `b` and moves to rev2
+    upstream.change_file(
+        "Cargo.toml",
+        r#"
+            [workspace]
+            members = ["a", "b"]
+        "#,
+    );
+    upstream.change_file("a/Cargo.toml", &basic_manifest("a", "0.2.0"));
+    upstream.change_file("b/Cargo.toml", &basic_manifest("b", "0.1.0"));
+    upstream.change_file("b/src/lib.rs", "");
+    git::add(&upstream_repo);
+    let rev2 = git::commit(&upstream_repo);
+
+    // #4: `foo` gains `b` through the new `m2`
+    let m2 = git::new("m2", |p| {
+        p.file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "m2"
+                    version = "0.1.0"
+                    edition = "2015"
+
+                    [dependencies]
+                    b = {{ git = "{}" }}
+                "#,
+                upstream.url()
+            ),
+        )
+        .file("src/lib.rs", "")
+    });
+    p.change_file(
+        "Cargo.toml",
+        &format!(
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+
+                [dependencies]
+                a = {{ git = "{}" }}
+                m2 = {{ git = "{}" }}
+            "#,
+            upstream.url(),
+            m2.url()
+        ),
+    );
+
+    // #5: `a@rev1` should remains locked
+    //      and `m2` is at `rev2`
+    p.cargo("fetch")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `[ROOTURL]/m2`
+[UPDATING] git repository `[ROOTURL]/upstream`
+[LOCKING] 2 packages to latest compatible versions
+[ADDING] b v0.1.0 ([ROOTURL]/upstream#[..])
+[ADDING] m2 v0.1.0 ([ROOTURL]/m2#[..])
+[ERROR] failed to download `a v0.1.0 ([ROOTURL]/upstream#[..])`
+
+Caused by:
+  unable to get packages from source
+
+Caused by:
+  failed to find a v0.1.0 ([ROOTURL]/upstream#[..]) in path source
+[NOTE] this is an unexpected cargo internal error
+[NOTE] we would appreciate a bug report: https://github.com/rust-lang/cargo/issues/
+[NOTE] cargo [..]
+"#]])
+        .run();
+
+    // #6: multi-rev lockfile was written out
+    let lock = p.read_file("Cargo.lock");
+    assert!(lock.contains(&rev1.to_string()));
+    assert!(lock.contains(&rev2.to_string()));
+
+    // #7: a fresh checkout should succeed
+    paths::cargo_home().join("git").rm_rf();
+    p.cargo("fetch")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+...
+[ERROR] failed to download `a v0.1.0 ([ROOTURL]/upstream#[..])`
+
+Caused by:
+  unable to get packages from source
+
+Caused by:
+  failed to find a v0.1.0 ([ROOTURL]/upstream#[..]) in path source
+[NOTE] this is an unexpected cargo internal error
+[NOTE] we would appreciate a bug report: https://github.com/rust-lang/cargo/issues/
+[NOTE] cargo [..]
+"#]])
+        .run();
+}
+
+/// Like [`lockfile_with_multiple_revisions_bump_pkg_version`]
+/// but instead of bump package version, the code content changes.
+///
+/// See rust-lang/cargo#13641.
+/// See also <https://github.com/rust-lang/cargo/pull/17275#issuecomment-5132821482>.
+#[cargo_test]
+fn lockfile_with_multiple_revisions_change_code_content() {
+    // #1: the upstream workspace at rev1
+    let (upstream, upstream_repo) = git::new_repo("upstream", |p| {
+        p.file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["a"]
+            "#,
+        )
+        .file("a/Cargo.toml", &basic_manifest("a", "0.1.0"))
+        .file(
+            "a/src/lib.rs",
+            r#"pub fn which() -> &'static str { "rev1" }"#,
+        )
+    });
+    let rev1 = upstream_repo.head().unwrap().target().unwrap();
+
+    // #2: `foo` locks a@rev1 and prints "rev1"
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "foo"
+                    version = "0.1.0"
+                    edition = "2015"
+
+                    [dependencies]
+                    a = {{ git = "{}" }}
+                "#,
+                upstream.url()
+            ),
+        )
+        .file(
+            "src/main.rs",
+            r#"
+                extern crate a;
+                fn main() {
+                    println!("{}", a::which());
+                }
+            "#,
+        )
+        .build();
+    p.cargo("run")
+        .with_stdout_data(str![[r#"
+rev1
+
+"#]])
+        .run();
+    assert!(p.read_file("Cargo.lock").contains(&rev1.to_string()));
+
+    // #3: upstream add a new member `b` and moves to rev2
+    upstream.change_file(
+        "Cargo.toml",
+        r#"
+            [workspace]
+            members = ["a", "b"]
+        "#,
+    );
+    upstream.change_file(
+        "a/src/lib.rs",
+        r#"pub fn which() -> &'static str { "rev2" }"#,
+    );
+    upstream.change_file("b/Cargo.toml", &basic_manifest("b", "0.1.0"));
+    upstream.change_file("b/src/lib.rs", "");
+    git::add(&upstream_repo);
+    let rev2 = git::commit(&upstream_repo);
+
+    // #4: `foo` gains `b` through the new `m2`
+    let m2 = git::new("m2", |p| {
+        p.file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "m2"
+                    version = "0.1.0"
+                    edition = "2015"
+
+                    [dependencies]
+                    b = {{ git = "{}" }}
+                "#,
+                upstream.url()
+            ),
+        )
+        .file("src/lib.rs", "")
+    });
+    p.change_file(
+        "Cargo.toml",
+        &format!(
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+
+                [dependencies]
+                a = {{ git = "{}" }}
+                m2 = {{ git = "{}" }}
+            "#,
+            upstream.url(),
+            m2.url()
+        ),
+    );
+
+    // #5: `a@rev1` should remain locked, no recompile, and print "rev1"
+    //      `m2` should be at `rev2`
+    p.cargo("run")
+        .with_stderr_data(
+            str![[r#"
+[UPDATING] git repository `[ROOTURL]/m2`
+[UPDATING] git repository `[ROOTURL]/upstream`
+[LOCKING] 2 packages to latest compatible versions
+[ADDING] b v0.1.0 ([ROOTURL]/upstream#[..])
+[ADDING] m2 v0.1.0 ([ROOTURL]/m2#[..])
+[COMPILING] a v0.1.0 ([ROOTURL]/upstream#[..])
+[COMPILING] b v0.1.0 ([ROOTURL]/upstream#[..])
+[COMPILING] m2 v0.1.0 ([ROOTURL]/m2#[..])
+[COMPILING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[RUNNING] `target/debug/foo[EXE]`
+
+"#]]
+            .unordered(),
+        )
+        .with_stdout_data(str![[r#"
+rev2
+
+"#]])
+        .run();
+    let lock = p.read_file("Cargo.lock");
+    assert!(lock.contains(&rev1.to_string()));
+    assert!(lock.contains(&rev2.to_string()));
+}
+
+/// Like [`lockfile_with_multiple_revisions_change_code_content`]
+/// but instead of changing code content,
+/// specify on the same branch ref that moves forward
+///
+/// See rust-lang/cargo#14230.
+/// See also <https://github.com/rust-lang/cargo/pull/17275#issuecomment-5132821482>.
+#[cargo_test]
+fn lockfile_with_multiple_revisions_of_same_git_branch() {
+    // #1: the upstream workspace at rev1
+    let (upstream, upstream_repo) = git::new_repo("upstream", |p| {
+        p.file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["a"]
+            "#,
+        )
+        .file("a/Cargo.toml", &basic_manifest("a", "0.1.0"))
+        .file(
+            "a/src/lib.rs",
+            r#"pub fn which() -> &'static str { "rev1" }"#,
+        )
+    });
+    let rev1 = upstream_repo.head().unwrap().target().unwrap();
+
+    // #2: `foo` locks a@rev1 and prints "rev1"
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "foo"
+                    version = "0.1.0"
+                    edition = "2015"
+
+                    [dependencies]
+                    a = {{ git = "{}", branch = "master" }}
+                "#,
+                upstream.url()
+            ),
+        )
+        .file(
+            "src/main.rs",
+            r#"
+                extern crate a;
+                fn main() {
+                    println!("{}", a::which());
+                }
+            "#,
+        )
+        .build();
+    p.cargo("run")
+        .with_stdout_data(str![[r#"
+rev1
+
+"#]])
+        .run();
+    let lock = p.read_file("Cargo.lock");
+    assert!(lock.contains(&format!("?branch=master#{rev1}")));
+
+    // #3: upstream add a new member `b` and moves to rev2
+    upstream.change_file(
+        "Cargo.toml",
+        r#"
+            [workspace]
+            members = ["a", "b"]
+        "#,
+    );
+    upstream.change_file(
+        "a/src/lib.rs",
+        r#"pub fn which() -> &'static str { "rev2" }"#,
+    );
+    upstream.change_file("b/Cargo.toml", &basic_manifest("b", "0.1.0"));
+    upstream.change_file("b/src/lib.rs", "");
+    git::add(&upstream_repo);
+    let rev2 = git::commit(&upstream_repo);
+
+    // #4: `foo` gains `b` through the new `m2`
+    let m2 = git::new("m2", |p| {
+        p.file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "m2"
+                    version = "0.1.0"
+                    edition = "2015"
+
+                    [dependencies]
+                    b = {{ git = "{}", branch = "master" }}
+                "#,
+                upstream.url()
+            ),
+        )
+        .file("src/lib.rs", "")
+    });
+    p.change_file(
+        "Cargo.toml",
+        &format!(
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+
+                [dependencies]
+                a = {{ git = "{}", branch = "master" }}
+                m2 = {{ git = "{}" }}
+            "#,
+            upstream.url(),
+            m2.url()
+        ),
+    );
+
+    // #5: `a@rev1` should remain locked, no recompile, and print "rev1"
+    //      `m2` should be at `rev2`
+    p.cargo("run")
+        .with_stdout_data(str![[r#"
+rev2
+
+"#]])
+        .run();
+    let lock = p.read_file("Cargo.lock");
+    assert!(lock.contains(&format!("?branch=master#{rev1}")));
+    assert!(lock.contains(&format!("?branch=master#{rev2}")));
 }

@@ -5,7 +5,6 @@ use cargo_test_support::str;
 
 mod blanket_hint_mostly_unused;
 mod error;
-mod implicit_minimum_version_req;
 mod inherited;
 mod missing_lints_inheritance;
 mod non_kebab_case_bins;
@@ -38,7 +37,7 @@ authors = []
 im-a-teapot = true
 
 [lints.cargo]
-im-a-teapot = "warn"
+im_a_teapot = "warn"
             "#,
         )
         .file("src/lib.rs", "")
@@ -47,14 +46,13 @@ im-a-teapot = "warn"
     foo.cargo("fetch -Zcargo-lints")
         .masquerade_as_nightly_cargo(&["cargo-lints", "test-dummy-unstable"])
         .with_stderr_data(str![[r#"
-[WARNING] unknown lint: `im-a-teapot`
-  --> Cargo.toml:12:1
-   |
-12 | im-a-teapot = "warn"
-   | ^^^^^^^^^^^
-   |
-   = [NOTE] `cargo::unknown_lints` is set to `warn` by default
-   = [HELP] there is a lint with a similar name: `im_a_teapot`
+[WARNING] `im_a_teapot` is specified
+ --> Cargo.toml:9:1
+  |
+9 | im-a-teapot = true
+  | ^^^^^^^^^^^^^^^^^^
+  |
+  = [NOTE] `cargo::im_a_teapot` is set to `warn` in `[lints]`
 [WARNING] `foo` (manifest) generated 1 warning
 
 "#]])

@@ -408,18 +408,6 @@ enum Status {
     Removed,
 }
 
-/// Config for the `-Zembed-metadata` option.
-#[derive(Debug, Default, Deserialize)]
-pub enum EmbedMetadata {
-    /// Embed metadata in .rlib files, the original rustc behavior.
-    Embed,
-    /// Do not embed metadata in .rlib files.
-    DoNotEmbed,
-    /// The `-Zembed-metadata` flag wasn't set.
-    #[default]
-    Unset,
-}
-
 /// A listing of stable and unstable new syntax in Cargo.toml.
 ///
 /// This generates definitions and impls for [`Features`] and [`Feature`]
@@ -826,7 +814,7 @@ macro_rules! unstable_cli_options {
         /// Cargo, like `rustc`, accepts a suite of `-Z` flags which are intended for
         /// gating unstable functionality to Cargo. These flags are only available on
         /// the nightly channel of Cargo.
-        #[derive(Default, Debug, Deserialize)]
+        #[derive(Debug, Deserialize)]
         #[serde(default, rename_all = "kebab-case")]
         pub struct CliUnstable {
             $(
@@ -840,6 +828,23 @@ macro_rules! unstable_cli_options {
             pub fn help() -> Vec<(&'static str, Option<&'static str>)> {
                 let fields = vec![$((stringify!($element), None$(.or(Some($help)))?)),*];
                 fields
+            }
+        }
+        impl Default for CliUnstable {
+            fn default() -> Self {
+                let mut unstable = Self {
+                    $(
+                        $element: Default::default()
+                    ),*
+                };
+
+                // Defaults to enabled on nightly unless explicitly opted out.
+                if !is_new_build_dir_layout_opt_out() {
+                    unstable.build_dir_new_layout =
+                        matches!(crate::version().release_channel.as_deref(), Some("nightly" | "dev"));
+                }
+
+                return unstable;
             }
         }
 
@@ -868,7 +873,7 @@ macro_rules! unstable_cli_options {
 unstable_cli_options!(
     // Permanently unstable features:
     allow_features: Option<AllowFeatures> = ("Allow *only* the listed unstable features"),
-    embed_metadata: EmbedMetadata = ("Avoid embedding metadata in library artifacts"),
+    embed_metadata: Option<bool> = ("Avoid embedding metadata in library artifacts"),
     print_im_a_teapot: bool,
 
     // All other unstable features.
@@ -1283,12 +1288,6 @@ impl CliUnstable {
             self.gitoxide = GitoxideFeatures::safe().into();
         }
 
-        // NOTE: We set this before `implicitly_enable_features_if_needed` as `-Zfine-grain-locking`
-        //       must use the new layout so that takes priority.
-        if is_new_build_dir_layout_opt_out() {
-            self.build_dir_new_layout = false;
-        }
-
         self.implicitly_enable_features_if_needed();
 
         Ok(warnings)
@@ -1307,11 +1306,11 @@ impl CliUnstable {
             }
         }
 
-        fn parse_embed_metadata(key: &str, value: Option<&str>) -> CargoResult<EmbedMetadata> {
+        fn parse_option_bool(key: &str, value: Option<&str>) -> CargoResult<Option<bool>> {
             match value {
-                None => Ok(EmbedMetadata::Unset),
-                Some("yes") => Ok(EmbedMetadata::Embed),
-                Some("no") => Ok(EmbedMetadata::DoNotEmbed),
+                None => Ok(None),
+                Some("yes") => Ok(Some(true)),
+                Some("no") => Ok(Some(false)),
                 Some(s) => bail!("flag -Z{key} expected `no` or `yes`, found: `{s}`"),
             }
         }
@@ -1367,7 +1366,7 @@ impl CliUnstable {
             // Permanently unstable features
             // Sorted alphabetically:
             "allow-features" => self.allow_features = Some(parse_list(v).into_iter().collect()),
-            "embed-metadata" => self.embed_metadata = parse_embed_metadata(k, v)?,
+            "embed-metadata" => self.embed_metadata = parse_option_bool(k, v)?,
             "print-im-a-teapot" => self.print_im_a_teapot = parse_bool(k, v)?,
 
             // Stabilized features

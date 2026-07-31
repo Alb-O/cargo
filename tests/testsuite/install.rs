@@ -1447,9 +1447,6 @@ fn uninstall_cwd_no_project() {
         .with_stderr_data(str![[r#"
 [ERROR] failed to read `[ROOT]/Cargo.toml`
 
-Caused by:
-  [NOT_FOUND]
-
 "#]])
         .run();
 }
@@ -3273,7 +3270,7 @@ authors = []
 im-a-teapot = true
 
 [lints.cargo]
-im-a-teapot = "deny"
+im_a_teapot = "deny"
             "#,
         )
         .file("src/main.rs", "fn main() { let unused = 10; }")
