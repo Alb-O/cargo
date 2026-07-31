@@ -540,7 +540,8 @@ pub fn resolve_with_previous<'gctx>(
     let patches = registry.patches().values().flat_map(|v| v.iter());
     resolved.register_used_patches(patches);
 
-    if register_patches && !resolved.unused_patches().is_empty() {
+    // An open workspace only knows members selected for this invocation, so an unused root patch may belong to any undiscovered member.
+    if register_patches && !ws.has_open_membership() && !resolved.unused_patches().is_empty() {
         emit_warnings_of_unused_patches(ws, &resolved, registry)?;
     }
 
