@@ -1003,7 +1003,7 @@ fn compute_metadata(
         let variant = InputVariant::select(
             build_root,
             unit.pkg.name().as_str(),
-            unit.pkg.root(),
+            unit.pkg.manifest_path(),
             input_schema_id,
             input_context_id,
             source,

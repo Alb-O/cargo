@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use crate::util::data_structures::HashMap;
 
-use super::{EncodedValue, FORMAT_VERSION, TrackedPath, TrackedRoot, encode_value};
-use super::{VariantRecord, file_stamp, load_records, variable_values, variant_key, write_record};
+use super::{EncodedValue, FORMAT_VERSION, InputEnvironment, TrackedPath, TrackedRoot};
+use super::{VariantRecord, encode_value, file_stamp, load_records, variant_key, write_record};
 
 #[test]
 fn variant_key_is_independent_of_declaration_order() {
@@ -20,10 +20,12 @@ fn variant_key_is_independent_of_declaration_order() {
     let mut second = vec!["B".to_owned(), "A".to_owned()];
     first.sort();
     second.sort();
+    let root = tempfile::tempdir().unwrap();
+    let environment = InputEnvironment::new(&root.path().join("Cargo.toml"), &env, true);
 
     assert_eq!(
-        variant_key(&variable_values(first.iter(), &env, true)),
-        variant_key(&variable_values(second.iter(), &env, true))
+        variant_key(&environment.values(&first)),
+        variant_key(&environment.values(&second))
     );
 }
 

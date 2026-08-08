@@ -24,7 +24,9 @@ pub mod outputs;
 #[cfg(test)]
 mod tests;
 
-const FORMAT_VERSION: u32 = 3;
+const FORMAT_VERSION: u32 = 4;
+const CARGO_MANIFEST_DIR_ENV: &str = "CARGO_MANIFEST_DIR";
+const CARGO_MANIFEST_PATH_ENV: &str = "CARGO_MANIFEST_PATH";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -40,6 +42,93 @@ impl InputSource {
             Self::RustcEnv => "rustc-env",
         }
     }
+
+    fn normalize_names(self, names: &mut Vec<String>) {
+        if self == Self::BuildScriptEnv {
+            // Build scripts may read Cargo's injected paths without declaring them through
+            // `rerun-if-env-changed`.
+            names.extend(
+                [CARGO_MANIFEST_DIR_ENV, CARGO_MANIFEST_PATH_ENV].map(str::to_owned),
+            );
+        }
+        names.sort_unstable();
+        names.dedup();
+    }
+}
+
+pub(super) fn is_manifest_path_env(name: &str) -> bool {
+    matches!(name, CARGO_MANIFEST_DIR_ENV | CARGO_MANIFEST_PATH_ENV)
+}
+
+#[derive(Clone, Debug)]
+struct InputEnvironment {
+    manifest_dir: PathBuf,
+    manifest_path: PathBuf,
+    env_config: Arc<HashMap<String, OsString>>,
+    inherit_process_env: bool,
+}
+
+impl InputEnvironment {
+    fn new(
+        manifest_path: &Path,
+        env_config: &Arc<HashMap<String, OsString>>,
+        inherit_process_env: bool,
+    ) -> Self {
+        Self {
+            manifest_dir: manifest_path
+                .parent()
+                .expect("package manifest has a parent")
+                .to_path_buf(),
+            manifest_path: manifest_path.to_path_buf(),
+            env_config: Arc::clone(env_config),
+            inherit_process_env,
+        }
+    }
+
+    fn values(&self, names: &[String]) -> Vec<(String, EncodedValue)> {
+        names
+            .iter()
+            .map(|name| (name.clone(), encode_value(self.value(name))))
+            .collect()
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn value(&self, name: &str) -> Option<OsString> {
+        match name {
+            CARGO_MANIFEST_DIR_ENV => Some(self.manifest_dir.as_os_str().to_owned()),
+            CARGO_MANIFEST_PATH_ENV => Some(self.manifest_path.as_os_str().to_owned()),
+            _ => self
+                .env_config
+                .get(name)
+                .cloned()
+                .or_else(|| self.inherit_process_env.then(|| env::var_os(name)).flatten()),
+        }
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn provisional_key(&self) -> u64 {
+        let mut environment = BTreeMap::new();
+        if self.inherit_process_env {
+            environment.extend(env::vars_os());
+        }
+        environment.extend(
+            self.env_config
+                .iter()
+                .map(|(name, value)| (OsString::from(name), value.clone())),
+        );
+        environment.insert(
+            OsString::from(CARGO_MANIFEST_DIR_ENV),
+            self.manifest_dir.as_os_str().to_owned(),
+        );
+        environment.insert(
+            OsString::from(CARGO_MANIFEST_PATH_ENV),
+            self.manifest_path.as_os_str().to_owned(),
+        );
+
+        let mut hasher = StableHasher::new();
+        environment.hash(&mut hasher);
+        Hasher::finish(&hasher).max(1)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -50,12 +139,10 @@ pub struct InputVariant {
     schema_id: UnitHash,
     context_id: UnitHash,
     build_root: PathBuf,
-    package_root: PathBuf,
     schema_path: PathBuf,
     records_dir: PathBuf,
     schema_lock: Option<PathBuf>,
-    env_config: Arc<HashMap<String, OsString>>,
-    inherit_process_env: bool,
+    environment: InputEnvironment,
 }
 
 #[derive(Debug)]
@@ -132,7 +219,7 @@ impl InputVariant {
     pub fn select(
         build_root: &Path,
         package_name: &str,
-        package_root: &Path,
+        manifest_path: &Path,
         schema_id: UnitHash,
         context_id: UnitHash,
         source: InputSource,
@@ -140,6 +227,11 @@ impl InputVariant {
         inherit_process_env: bool,
         gctx: &GlobalContext,
     ) -> CargoResult<Self> {
+        let environment = InputEnvironment::new(
+            manifest_path,
+            env_config,
+            inherit_process_env,
+        );
         let registry_root = build_root.join(".input-variants").join("v1");
         let relative = Path::new(source.directory())
             .join(package_name)
@@ -170,16 +262,12 @@ impl InputVariant {
             schema.as_ref().map(|schema| schema.generation),
         )?;
         let schema_missing = schema.is_none();
-        let values = schema
+        let mut names = schema
             .as_ref()
-            .map(|schema| {
-                variable_values(
-                    schema.names.iter(),
-                    env_config,
-                    inherit_process_env,
-                )
-            })
+            .map(|schema| schema.names.clone())
             .unwrap_or_default();
+        source.normalize_names(&mut names);
+        let values = environment.values(&names);
         let context_key = context_id.to_string();
         let mut found_matching_record = false;
         let mut matching_records = Vec::new();
@@ -188,13 +276,13 @@ impl InputVariant {
                 continue;
             }
             found_matching_record = true;
-            if !record.is_stale(package_root, build_root) {
+            if !record.is_stale(&environment.manifest_dir, build_root) {
                 matching_records.push(record);
             }
         }
         let records_stale = found_matching_record && matching_records.is_empty();
         let matching_record = if matching_records.len() > 1 {
-            let preferred = provisional_key(env_config, inherit_process_env);
+            let preferred = environment.provisional_key();
             if let Some(index) = matching_records
                 .iter()
                 .position(|record| record.key == preferred)
@@ -212,12 +300,12 @@ impl InputVariant {
         let provisional = records_stale
             || (schema_missing && gctx.cli_unstable().fine_grain_locking);
         let key = if provisional {
-            provisional_key(env_config, inherit_process_env)
+            environment.provisional_key()
         } else if let Some(mut record) = matching_record {
             record.last_used = now();
             write_record(&records_dir, &record)?;
             record.key
-        } else if values.is_empty() {
+        } else if schema_missing || values.is_empty() {
             0
         } else {
             variant_key(&values)
@@ -230,12 +318,10 @@ impl InputVariant {
             schema_id,
             context_id,
             build_root: build_root.to_path_buf(),
-            package_root: package_root.to_path_buf(),
             schema_path,
             records_dir,
             schema_lock,
-            env_config: Arc::clone(env_config),
-            inherit_process_env,
+            environment,
         })
     }
 
@@ -248,6 +334,7 @@ impl InputVariant {
     }
 
     pub fn hash(&self, hasher: &mut StableHasher) {
+        FORMAT_VERSION.hash(hasher);
         if self.key != 0 {
             self.source.hash(hasher);
             self.key.hash(hasher);
@@ -270,8 +357,7 @@ impl InputVariant {
             .map(|schema| schema.names.clone())
             .unwrap_or_default();
         merged_names.extend(names.iter().cloned());
-        merged_names.sort();
-        merged_names.dedup();
+        self.source.normalize_names(&mut merged_names);
 
         let mut tracked_paths = paths
             .iter()
@@ -312,11 +398,7 @@ impl InputVariant {
             generation,
             context_id: self.context_id.to_string(),
             key: self.key,
-            values: variable_values(
-                schema.names.iter(),
-                &self.env_config,
-                self.inherit_process_env,
-            ),
+            values: self.environment.values(&schema.names),
             tracked_paths,
             created: timestamp,
             last_used: timestamp,
@@ -329,9 +411,9 @@ impl InputVariant {
         let absolute = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.package_root.join(path)
+            self.environment.manifest_dir.join(path)
         };
-        let (root, path) = if let Ok(path) = absolute.strip_prefix(&self.package_root) {
+        let (root, path) = if let Ok(path) = absolute.strip_prefix(&self.environment.manifest_dir) {
             (TrackedRoot::Package, path.to_path_buf())
         } else if let Ok(path) = absolute.strip_prefix(&self.build_root) {
             (TrackedRoot::Build, path.to_path_buf())
@@ -376,25 +458,6 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
         modified_secs: modified.as_secs(),
         modified_nanos: modified.subsec_nanos(),
     })
-}
-
-#[allow(clippy::disallowed_methods)]
-fn provisional_key(
-    env_config: &Arc<HashMap<String, OsString>>,
-    inherit_process_env: bool,
-) -> u64 {
-    let mut environment = BTreeMap::new();
-    if inherit_process_env {
-        environment.extend(env::vars_os());
-    }
-    environment.extend(
-        env_config
-            .iter()
-            .map(|(name, value)| (OsString::from(name), value.clone())),
-    );
-    let mut hasher = StableHasher::new();
-    environment.hash(&mut hasher);
-    Hasher::finish(&hasher).max(1)
 }
 
 fn load_schema(
@@ -481,34 +544,6 @@ fn remove_dir_if_exists(path: &Path) -> CargoResult<()> {
         paths::remove_dir_all(path)?;
     }
     Ok(())
-}
-
-fn variable_values<'a>(
-    names: impl IntoIterator<Item = &'a String>,
-    env_config: &Arc<HashMap<String, OsString>>,
-    inherit_process_env: bool,
-) -> Vec<(String, EncodedValue)> {
-    names
-        .into_iter()
-        .map(|name| {
-            (
-                name.clone(),
-                encode_value(variable_value(name, env_config, inherit_process_env)),
-            )
-        })
-        .collect()
-}
-
-#[allow(clippy::disallowed_methods)]
-fn variable_value(
-    name: &str,
-    env_config: &Arc<HashMap<String, OsString>>,
-    inherit_process_env: bool,
-) -> Option<OsString> {
-    env_config
-        .get(name)
-        .cloned()
-        .or_else(|| inherit_process_env.then(|| env::var_os(name)).flatten())
 }
 
 fn encode_value(value: Option<OsString>) -> EncodedValue {

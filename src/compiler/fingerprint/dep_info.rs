@@ -335,17 +335,24 @@ pub fn translate_dep_info(
     // not tracked elsewhere in the fingerprint.
     //
     // For cargo#13280, We trace env vars that are defined in the `[env]` config table.
+    // Manifest paths remain observable because retained artifacts can cross worktree roots.
     on_disk_info.env.retain(|(key, _)| {
         ManifestMetadata::should_track(key)
             || env_config.contains_key(key)
             || !rustc_cmd.get_envs().contains_key(key)
             || key == CARGO_ENV
+            || crate::compiler::input_variants::is_manifest_path_env(key)
     });
     let observed_env = on_disk_info
         .env
         .iter()
         .map(|(name, _)| name.clone())
         .collect();
+    // The input variant owns Cargo-injected manifest paths. The ordinary dep-info checker can
+    // resolve only inherited and configured environment values.
+    on_disk_info
+        .env
+        .retain(|(key, _)| !crate::compiler::input_variants::is_manifest_path_env(key));
 
     let serialize_path = |file| {
         // The path may be absolute or relative, canonical or not. Make sure
