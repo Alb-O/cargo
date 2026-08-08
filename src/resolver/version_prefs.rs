@@ -176,7 +176,7 @@ impl PublishAgePolicy {
     /// * the `-Zmin-publish-age` gate is off
     /// * the resolver is configured to allow pubtime-incompatible versions
     /// * no threshold is configured at all
-    pub fn new(gctx: &GlobalContext) -> CargoResult<Option<Self>> {
+    pub fn new(now: Option<jiff::Timestamp>, gctx: &GlobalContext) -> CargoResult<Option<Self>> {
         let resolver_config = gctx.get::<Option<CargoResolverConfig>>("resolver")?;
         if resolver_config
             .and_then(|c| c.incompatible_publish_age)
@@ -185,12 +185,15 @@ impl PublishAgePolicy {
             return Ok(None);
         }
 
-        Self::for_report(gctx)
+        Self::for_report(now, gctx)
     }
 
     /// Like [`PublishAgePolicy::new`] but ignore config from `[resolver]`,
     /// so it report too-new packages regardess they are allowed or denied.
-    pub fn for_report(gctx: &GlobalContext) -> CargoResult<Option<Self>> {
+    pub fn for_report(
+        now: Option<jiff::Timestamp>,
+        gctx: &GlobalContext,
+    ) -> CargoResult<Option<Self>> {
         if !gctx.cli_unstable().min_publish_age {
             return Ok(None);
         }
@@ -239,7 +242,7 @@ impl PublishAgePolicy {
         }
 
         Ok(Some(Self {
-            invocation_time: gctx.invocation_time(),
+            invocation_time: now.unwrap_or_else(|| gctx.invocation_time()),
             global,
             crates_io,
             per_registry,
@@ -294,6 +297,28 @@ impl PublishAgePolicy {
 
         &self.global
     }
+
+    /// A single min-publish-age, if there is one
+    pub fn common_min_publish_age(&self) -> Option<PublishAgeViolation> {
+        if !self.per_registry.is_empty() {
+            return None;
+        }
+
+        if self.crates_io.is_set() {
+            return None;
+        }
+
+        if let MinPublishAge::Age(age, config) = &self.global {
+            jiff::SignedDuration::try_from(*age).ok().and_then(|age| {
+                Some(PublishAgeViolation {
+                    age,
+                    config: config.clone(),
+                })
+            })
+        } else {
+            None
+        }
+    }
 }
 
 /// A configured `min-publish-age` value for one scope.
@@ -340,7 +365,7 @@ impl PublishAgeViolation {
     pub fn note(&self) -> String {
         let age = self.age_label();
         let config = self.config();
-        format!("published {age}, minimum age {config}",)
+        format!("published {age} ago, minimum age {config}",)
     }
 }
 
@@ -353,7 +378,7 @@ fn format_age_as_single_unit(age: jiff::SignedDuration) -> String {
 
     // An age at or ahead of "now" gives a non-positive age.
     if age <= jiff::SignedDuration::ZERO {
-        return "moments ago".to_string();
+        return "moments".to_string();
     }
 
     let rounded = jiff::Span::try_from(age).and_then(|span| {
@@ -378,10 +403,10 @@ fn format_age_as_single_unit(age: jiff::SignedDuration) -> String {
         .spacing(Spacing::BetweenUnitsAndDesignators);
 
     match rounded {
-        Ok(span) => format!("{} ago", printer.span_to_string(&span)),
+        Ok(span) => printer.span_to_string(&span).to_string(),
         Err(e) => {
             tracing::warn!("failed to round `{age}`: {e}");
-            format!("{} seconds ago", age.as_secs())
+            format!("{} seconds", age.as_secs())
         }
     }
 }
@@ -815,29 +840,29 @@ mod test {
     #[test]
     fn rounds_to_a_single_unit() {
         // `>= 2 days` rounds to the nearest day.
-        assert_age(2 * DAY, "2 days ago");
-        assert_age(2 * DAY + 8 * HOUR + 23 * MIN, "2 days ago");
-        assert_age(2 * DAY + 13 * HOUR, "3 days ago");
-        assert_age(540 * DAY, "540 days ago");
+        assert_age(2 * DAY, "2 days");
+        assert_age(2 * DAY + 8 * HOUR + 23 * MIN, "2 days");
+        assert_age(2 * DAY + 13 * HOUR, "3 days");
+        assert_age(540 * DAY, "540 days");
 
         // `1 hour ..< 2 days` rounds to the nearest hour.
-        assert_age(47 * HOUR, "47 hours ago");
-        assert_age(24 * HOUR, "24 hours ago");
-        assert_age(11 * HOUR + 40 * MIN, "12 hours ago");
-        assert_age(11 * HOUR + 20 * MIN, "11 hours ago");
-        assert_age(HOUR, "1 hour ago");
+        assert_age(47 * HOUR, "47 hours");
+        assert_age(24 * HOUR, "24 hours");
+        assert_age(11 * HOUR + 40 * MIN, "12 hours");
+        assert_age(11 * HOUR + 20 * MIN, "11 hours");
+        assert_age(HOUR, "1 hour");
 
         // `1 minute ..< 1 hour` rounds to the nearest minute.
-        assert_age(40 * MIN, "40 minutes ago");
-        assert_age(MIN, "1 minute ago");
+        assert_age(40 * MIN, "40 minutes");
+        assert_age(MIN, "1 minute");
 
         // `< 1 minute` rounds to the nearest second.
-        assert_age(40, "40 seconds ago");
-        assert_age(1, "1 second ago");
+        assert_age(40, "40 seconds");
+        assert_age(1, "1 second");
 
         // ahead of "now" (clock drift)
-        assert_age(0, "moments ago");
-        assert_age(-20, "moments ago");
-        assert_age(-2 * DAY, "moments ago");
+        assert_age(0, "moments");
+        assert_age(-20, "moments");
+        assert_age(-2 * DAY, "moments");
     }
 }

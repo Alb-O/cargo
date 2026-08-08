@@ -326,7 +326,7 @@ fn overrides_with_custom() {
     p.cargo("build -v")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] xxx v0.5.0 ([ROOT]/foo/xxx)
 [COMPILING] yyy v0.5.0 ([ROOT]/foo/yyy)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -599,35 +599,6 @@ See https://doc.rust-lang.org/cargo/reference/profiles.html for more on configur
             ))
             .run();
     }
-
-    p.change_file(
-        "Cargo.toml",
-        r#"
-               [package]
-               name = "foo"
-               version = "0.1.0"
-               edition = "2015"
-               authors = []
-
-               [profile.debug]
-               debug = 1
-               inherits = "dev"
-            "#,
-    );
-
-    p.cargo("build")
-        .with_status(101)
-        .with_stderr_data(str![[r#"
-[ERROR] profile name `debug` is reserved
-       To configure the default development profile, use the name `dev` as in [profile.dev]
-       See https://doc.rust-lang.org/cargo/reference/profiles.html for more on configuring profiles.
- --> Cargo.toml:8:25
-  |
-8 |                [profile.debug]
-  |                         ^^^^^
-
-"#]])
-        .run();
 }
 
 #[cargo_test]
@@ -727,7 +698,7 @@ fn test_inherits_dev() {
     p.cargo("test --lib --no-run -v")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] somedep v1.0.0 (registry `dummy-registry`)
 [COMPILING] somedep v1.0.0
@@ -738,8 +709,9 @@ fn test_inherits_dev() {
 [EXECUTABLE] `[ROOT]/foo/target/debug/deps/foo-[HASH][EXE]`
 
 "#]])
-        .with_stdout_does_not_contain("[..] -C debuginfo=0[..]")
-        .with_stdout_does_not_contain("[..] -C opt-level=0[..]")
+        .with_stderr_does_not_contain("[..] -C debuginfo=0[..]")
+        .with_stderr_does_not_contain("[..] -C opt-level=0[..]")
+        .with_stderr_contains("[..] -C opt-level=3[..]")
         .run();
 }
 
@@ -788,6 +760,66 @@ fn request_test_profile() {
         .with_stderr_data(str![[r#"
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn debug_inherits_dev() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2015"
+
+            [profile.dev]
+            debug = 0
+
+            [profile.debug]
+            opt-level = 3
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    p.cargo("check --profile=debug -v")
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..]`
+[FINISHED] `debug` profile [optimized] target(s) in [ELAPSED]s
+
+"#]])
+        .with_stderr_does_not_contain("[..] -C debuginfo=0[..]")
+        .with_stderr_does_not_contain("[..] -C opt-level=0[..]")
+        .with_stderr_contains("[..] -C opt-level=3[..]")
+        .run();
+}
+
+#[cargo_test]
+fn change_debug_inheritance() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2015"
+
+            [profile.debug]
+            inherits = "release"
+            debug = true
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    p.cargo("check --profile=debug")
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `debug` profile [optimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
         .run();

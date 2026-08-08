@@ -6,6 +6,7 @@ use cargo_test_support::str;
 mod blanket_hint_mostly_unused;
 mod error;
 mod inherited;
+mod manual_readme;
 mod missing_lints_inheritance;
 mod non_kebab_case_bins;
 mod non_kebab_case_features;
@@ -13,7 +14,6 @@ mod non_kebab_case_packages;
 mod non_snake_case_features;
 mod non_snake_case_packages;
 mod redundant_homepage;
-mod redundant_readme;
 mod text_direction_codepoint;
 mod unknown_lints;
 mod unused_dependencies;
@@ -240,7 +240,7 @@ bar = "0.1.0"
         .masquerade_as_nightly_cargo(&["cargo-lints"])
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 ...
 
@@ -472,7 +472,7 @@ fn explicit_lint_level_overrides_default() {
         .masquerade_as_nightly_cargo(&["cargo-lints"])
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] `package.homepage` is redundant with another manifest field
+[ERROR] `package.homepage` is redundant with `package.repository`
  --> Cargo.toml:8:24
   |
 7 |             repository = "https://github.com/rust-lang/cargo/"

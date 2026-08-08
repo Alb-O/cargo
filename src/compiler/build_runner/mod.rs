@@ -331,7 +331,10 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
         for output in self.outputs(unit)?.iter() {
             if matches!(
                 output.flavor,
-                FileFlavor::DebugInfo | FileFlavor::Auxiliary | FileFlavor::Sbom
+                FileFlavor::DebugInfo
+                    | FileFlavor::Auxiliary
+                    | FileFlavor::Sbom
+                    | FileFlavor::Unremap
             ) {
                 continue;
             }
@@ -642,6 +645,16 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
             .outputs(unit)?
             .iter()
             .filter(|o| o.flavor == FileFlavor::Sbom)
+            .map(|o| o.path.clone())
+            .collect())
+    }
+
+    /// Returns the list of unremap file paths for a given [`Unit`].
+    pub fn unremap_output_files(&self, unit: &Unit) -> CargoResult<Vec<PathBuf>> {
+        Ok(self
+            .outputs(unit)?
+            .iter()
+            .filter(|o| o.flavor == FileFlavor::Unremap)
             .map(|o| o.path.clone())
             .collect())
     }

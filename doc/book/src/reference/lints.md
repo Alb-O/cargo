@@ -17,11 +17,8 @@
 |----------------------|-------------------------------------------------------------------------------------|---------------|
 | `cargo::default`     | all lints that are on by default (correctness, suspicious, style, complexity, perf) | warn/deny     |
 | `cargo::correctness` | code that is outright wrong or useless                                              | deny          |
-| `cargo::complexity`  | code that does something simple but in a complex way                                | warn          |
-| `cargo::perf`        | code that can be written to run faster                                              | warn          |
 | `cargo::style`       | code that should be written in a more idiomatic way                                 | warn          |
 | `cargo::suspicious`  | code that is most likely wrong or useless                                           | warn          |
-| `cargo::nursery`     | new lints that are still under development                                          | allow         |
 | `cargo::pedantic`    | lints which are rather strict or have occasional false positives                    | allow         |
 | `cargo::restriction` | lints which prevent the use of Cargo features                                       | allow         |
 
@@ -38,10 +35,10 @@ These lints are all set to the 'allow' level by default.
 
 These lints are all set to the 'warn' level by default.
 - [`blanket_hint_mostly_unused`](#blanket_hint_mostly_unused)
+- [`manual_readme`](#manual_readme)
 - [`missing_lints_inheritance`](#missing_lints_inheritance)
 - [`non_kebab_case_bins`](#non_kebab_case_bins)
 - [`redundant_homepage`](#redundant_homepage)
-- [`redundant_readme`](#redundant_readme)
 - [`unknown_lints`](#unknown_lints)
 - [`unused_dependencies`](#unused_dependencies)
 - [`unused_workspace_dependencies`](#unused_workspace_dependencies)
@@ -82,6 +79,43 @@ Should instead be:
 ```toml
 [profile.dev.package.huge-mostly-unused-dependency]
 hint-mostly-unused = true
+```
+
+
+## `manual_readme`
+
+- Group: `style`
+- Level: `warn`
+- Minimal [`package.rust-version`]: `1.79.0`
+
+
+### What it does
+
+Checks for `package.readme` fields that can be inferred.
+
+See also [`package.readme` reference documentation](manifest.md#the-readme-field).
+
+### Why is this bad?
+
+Adds boilerplate.
+
+### Drawbacks
+
+It might not be obvious if they named their file correctly.
+
+### Example
+
+```toml
+[package]
+name = "foo"
+readme = "README.md"
+```
+
+Should be written as:
+
+```toml
+[package]
+name = "foo"
 ```
 
 
@@ -330,43 +364,6 @@ Should be written as:
 [package]
 name = "foo"
 repository = "https://github.com/rust-lang/cargo/"
-```
-
-
-## `redundant_readme`
-
-- Group: `style`
-- Level: `warn`
-- Minimal [`package.rust-version`]: `1.79.0`
-
-
-### What it does
-
-Checks for `package.readme` fields that can be inferred.
-
-See also [`package.readme` reference documentation](manifest.md#the-readme-field).
-
-### Why is this bad?
-
-Adds boilerplate.
-
-### Drawbacks
-
-It might not be obvious if they named their file correctly.
-
-### Example
-
-```toml
-[package]
-name = "foo"
-readme = "README.md"
-```
-
-Should be written as:
-
-```toml
-[package]
-name = "foo"
 ```
 
 

@@ -247,6 +247,7 @@ inherited by members of a workspace.
 
 Specifying a workspace dependency is similar to [package dependencies][specifying-dependencies] except:
 - Dependencies from this table cannot be declared as `optional`
+- [`features`][features] declared in this table are additive with the `features` from `[dependencies]`
 
 Members inherit the workspace dependency's `default-features` setting when the field is omitted. A member that supplies `default-features` replaces the workspace value for that dependency declaration. Member `features` remain additive with the features declared in this table. Normal [feature unification][features] can still enable features requested elsewhere in the dependency graph.
 
@@ -262,6 +263,7 @@ members = ["bar"]
 cc = "1.0.73"
 rand = "0.8.5"
 regex = { version = "1.6.0", default-features = false, features = ["std"] }
+serde = { version = "1.0.190", default-features = true }
 ```
 
 ```toml
@@ -271,7 +273,8 @@ name = "bar"
 version = "0.2.0"
 
 [dependencies]
-regex = { workspace = true, default-features = false, features = ["unicode"] }
+regex = { workspace = true, features = ["unicode"] }
+serde = { workspace = true, default-features = false }
 
 [build-dependencies]
 cc.workspace = true

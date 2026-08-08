@@ -43,8 +43,8 @@ OPTIONS
            version requirement in Cargo.toml doesn’t contain any pre-release
            identifier (nightly only).
 
-       --breaking directory
-           Update spec to latest SemVer-breaking version.
+       --breaking
+           Update spec to highest SemVer-breaking version.
 
            Version requirements will be modified to allow this update.
 

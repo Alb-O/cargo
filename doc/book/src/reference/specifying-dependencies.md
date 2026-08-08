@@ -639,11 +639,11 @@ After that, add it to the `[dependencies]` table with `workspace = true`.
 Along with the `workspace` key, dependencies can also include these keys:
 - [`optional`][optional]: the `[workspace.dependencies]` table cannot specify `optional`
 - [`features`][features]: additive with the features declared in `[workspace.dependencies]`
-- `default-features`: replaces the inherited default-feature setting when specified
+- [`default-features`][default-features]: replaces the inherited default-feature setting when specified
 
 Other dependency keys, such as `version` or `path`, remain owned by the workspace declaration.
 
-When `default-features` is omitted, the value from `[workspace.dependencies]` is inherited. Normal [feature unification][features] can still enable features requested by another dependency declaration.
+When `default-features` is omitted, the value from `[workspace.dependencies]` is inherited. If neither declaration specifies it, the value defaults to `true`. Normal [feature unification][features] can still enable features requested by another dependency declaration.
 
 Dependencies in the `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, and
 `[target."...".dependencies]` sections support the ability to reference the
@@ -655,7 +655,8 @@ name = "bar"
 version = "0.2.0"
 
 [dependencies]
-regex = { workspace = true, default-features = false, features = ["unicode"] }
+regex = { workspace = true, features = ["unicode"] }
+serde = { workspace = true, default-features = false }
 
 [build-dependencies]
 cc.workspace = true
@@ -671,3 +672,4 @@ rand = { workspace = true, optional = true }
 [workspace.dependencies]: workspaces.md#the-dependencies-table
 [optional]: features.md#optional-dependencies
 [features]: features.md
+[default-features]: features.md#dependency-features

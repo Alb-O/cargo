@@ -300,7 +300,7 @@ fn inherit_own_dependencies() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.2 (registry `dummy-registry`)
 [DOWNLOADED] dep-build v0.8.2 (registry `dummy-registry`)
@@ -473,7 +473,7 @@ fn inherit_own_detailed_dependencies() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.2 (registry `dummy-registry`)
 [CHECKING] dep v0.1.2
@@ -662,7 +662,7 @@ fn inherited_dependencies_union_features() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
@@ -904,7 +904,7 @@ fn inherit_dependencies() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.2 (registry `dummy-registry`)
 [DOWNLOADED] dep-build v0.8.2 (registry `dummy-registry`)
@@ -1080,7 +1080,7 @@ fn inherit_target_dependencies() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.2 (registry `dummy-registry`)
 [CHECKING] dep v0.1.2
@@ -1127,7 +1127,7 @@ fn inherit_dependency_override_optional() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] bar v0.2.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -1171,7 +1171,7 @@ fn inherit_dependency_features() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
@@ -1243,7 +1243,7 @@ fn inherit_detailed_dependencies() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `[ROOTURL]/detailed`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] detailed v0.5.0 ([ROOTURL]/detailed?branch=branchy#[..])
 [CHECKING] bar v0.2.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1540,7 +1540,7 @@ fn inherit_def_feat_true_member_def_feat_false() {
 
     p.cargo("check").with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest Rust [..] compatible version
+[LOCKING] 1 package to highest Rust [..] compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [CHECKING] dep v0.1.0
@@ -1586,7 +1586,7 @@ fn inherit_simple_member_def_feat_false() {
 
     p.cargo("check").with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [CHECKING] dep v0.1.0
@@ -1633,7 +1633,7 @@ fn inherit_def_feat_false_member_def_feat_true() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
@@ -1722,7 +1722,7 @@ fn warn_inherit_unused_manifest_key_dep() {
 [WARNING] Cargo.toml: unused manifest key: dependencies.dep.wxz
 [WARNING] `bar` (manifest) generated 2 warnings
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [CHECKING] dep v0.1.0

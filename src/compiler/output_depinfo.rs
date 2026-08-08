@@ -203,7 +203,7 @@ pub fn output_depinfo(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> Ca
 
         if matches!(
             output.flavor,
-            FileFlavor::DebugInfo | FileFlavor::Auxiliary | FileFlavor::Sbom
+            FileFlavor::DebugInfo | FileFlavor::Auxiliary | FileFlavor::Sbom | FileFlavor::Unremap
         ) {
             continue;
         }

@@ -7,7 +7,7 @@ use cargo_util_terminal::report::Level;
 use cargo_util_terminal::report::Origin;
 use cargo_util_terminal::report::Patch;
 use cargo_util_terminal::report::Snippet;
-use tracing::instrument;
+use tracing::{instrument, trace};
 
 use super::SUSPICIOUS;
 use crate::CargoResult;
@@ -22,7 +22,6 @@ use crate::workspace::Workspace;
 
 pub static LINT: &Lint = &Lint {
     name: "blanket_hint_mostly_unused",
-    desc: "blanket_hint_mostly_unused lint",
     primary_group: &SUSPICIOUS,
     msrv: Some(super::CARGO_LINTS_MSRV),
     feature_gate: None,
@@ -64,6 +63,11 @@ pub(crate) fn lint_workspace(
     pkg_stats: &mut ScopedDiagnosticStats<'_>,
     gctx: &GlobalContext,
 ) -> CargoResult<()> {
+    if !gctx.cli_unstable().profile_hint_mostly_unused {
+        trace!("ignoring `blanket_hint_mostly_unused` without `-Zprofile-hint-mostly-unused`");
+        return Ok(());
+    }
+
     let LintLevelProduct {
         level: lint_level,
         source,

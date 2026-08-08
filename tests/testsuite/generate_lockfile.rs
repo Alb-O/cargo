@@ -226,11 +226,11 @@ fn no_index_update_sparse() {
     no_index_update(
         str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]],
         str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]],
     );
@@ -241,11 +241,11 @@ fn no_index_update_git() {
     no_index_update(
         str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]],
         str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]],
     );
@@ -434,14 +434,14 @@ fn generate_lockfile_holds_lock_and_offline() {
     p.cargo("generate-lockfile")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .run();
 
     p.cargo("generate-lockfile --offline")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .run();
@@ -503,7 +503,7 @@ fn publish_time() {
         .masquerade_as_nightly_cargo(&["publish-time"])
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions as of 2025-03-01T06:00:00Z
+[LOCKING] 2 packages to highest compatible versions as of 2025-03-01T06:00:00Z
 [ADDING] has_time v2025.1.1 (available: v2025.6.1)
 
 "#]])

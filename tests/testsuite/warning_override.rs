@@ -258,7 +258,7 @@ fn lint_parse_pass() {
     p.cargo("fetch -Zcargo-lints")
         .masquerade_as_nightly_cargo(&["cargo-lints"])
         .with_stderr_data(str![[r#"
-[WARNING] `package.homepage` is redundant with another manifest field
+[WARNING] `package.homepage` is redundant with `package.repository`
  --> Cargo.toml:8:24
   |
 7 |             repository = "https://github.com/rust-lang/cargo/"
@@ -275,7 +275,7 @@ fn lint_parse_pass() {
     p.cargo("check -Zcargo-lints")
         .masquerade_as_nightly_cargo(&["cargo-lints"])
         .with_stderr_data(str![[r#"
-[WARNING] `package.homepage` is redundant with another manifest field
+[WARNING] `package.homepage` is redundant with `package.repository`
  --> Cargo.toml:8:24
   |
 7 |             repository = "https://github.com/rust-lang/cargo/"
@@ -314,7 +314,7 @@ fn lint_parse_pass() {
         .arg("build.warnings='deny'")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[WARNING] `package.homepage` is redundant with another manifest field
+[WARNING] `package.homepage` is redundant with `package.repository`
  --> Cargo.toml:8:24
   |
 7 |             repository = "https://github.com/rust-lang/cargo/"
@@ -335,7 +335,7 @@ fn lint_parse_pass() {
         .arg("build.warnings='deny'")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[WARNING] `package.homepage` is redundant with another manifest field
+[WARNING] `package.homepage` is redundant with `package.repository`
  --> Cargo.toml:8:24
   |
 7 |             repository = "https://github.com/rust-lang/cargo/"
@@ -388,19 +388,19 @@ fn lint_build_result_pass() {
         .masquerade_as_nightly_cargo(&["cargo-lints"])
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] unused v0.1.0 (registry `dummy-registry`)
 [CHECKING] unused v0.1.0
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
-[WARNING] unused dependency
+[WARNING] unused dependency `unused`
  --> Cargo.toml:9:13
   |
 9 |             unused = "0.1.0"
   |             ^^^^^^^^^^^^^^^^
   |
   = [NOTE] `cargo::unused_dependencies` is set to `warn` in `[lints]`
-[HELP] consider removing the unused dependency
+[HELP] consider removing the dependency on `unused`
 [WARNING] `foo` (manifest) generated 1 warning
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -423,14 +423,14 @@ fn lint_build_result_pass() {
         .arg("build.warnings='deny'")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[WARNING] unused dependency
+[WARNING] unused dependency `unused`
  --> Cargo.toml:9:13
   |
 9 |             unused = "0.1.0"
   |             ^^^^^^^^^^^^^^^^
   |
   = [NOTE] `cargo::unused_dependencies` is set to `warn` in `[lints]`
-[HELP] consider removing the unused dependency
+[HELP] consider removing the dependency on `unused`
 [WARNING] `foo` (manifest) generated 1 warning
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [ERROR] warnings are denied by `build.warnings` configuration
@@ -630,7 +630,7 @@ fn cap_lints_deny() {
     p.cargo("check -vv")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] has_warning v1.0.0 (registry `dummy-registry`)
 [CHECKING] has_warning v1.0.0
@@ -705,7 +705,7 @@ fn cap_lints_allow() {
     p.cargo("check -vv")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] has_warning v1.0.0 (registry `dummy-registry`)
 [CHECKING] has_warning v1.0.0

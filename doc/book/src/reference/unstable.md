@@ -1309,12 +1309,13 @@ you are ok with dev-deps being build for `cargo doc`.
 
 * Tracking Issue: [#13283](https://github.com/rust-lang/cargo/issues/13283)
 
-This flag determines the output format of `cargo rustdoc`, accepting `html` or `json`, providing tools with a way to lean on [rustdoc's experimental JSON format](https://doc.rust-lang.org/nightly/nightly-rustc/rustdoc_json_types/).
+This flag determines the output format of `cargo rustdoc` and `cargo doc`, accepting `html` or `json`, providing tools with a way to lean on [rustdoc's experimental JSON format](https://doc.rust-lang.org/nightly/nightly-rustc/rustdoc_json_types/).
 
 You can use the flag like this:
 
 ```
 cargo rustdoc -Z unstable-options --output-format json
+cargo doc -Z unstable-options --output-format json
 ```
 
 ## codegen-backend
@@ -1549,11 +1550,32 @@ But the paths to these separate files are sanitized.
 
 If `trim-paths` is not `none` or `false`, then the following paths are sanitized if they appear in a selected scope:
 
-1. Path to the source files of the standard and core library (sysroot) will begin with `/rustc/[rustc commit hash]`,
+1. Path to the source files of the standard and core library (sysroot) will begin with `/rustc/<rustc commit hash>`,
    e.g. `/home/username/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs` ->
    `/rustc/fe72845f7bb6a77b9e671e6a4f32fe714962cec4/library/core/src/result.rs`
-2. Path to the current package will be stripped, relatively to the current workspace root, e.g. `/home/username/crate/src/lib.rs` -> `src/lib.rs`.
-3. Path to dependency packages will be replaced with `[package name]-[version]`. E.g. `/home/username/deps/foo/src/lib.rs` -> `foo-0.1.0/src/lib.rs`
+2. Path to the current package will be stripped,
+   relatively to the current workspace root,
+   e.g. `/home/username/crate/src/lib.rs` -> `src/lib.rs`.
+   This also covers path dependencies located inside the workspace directory.
+3. Path to a registry dependency will begin with `/cargo/registry/<registry id>`,
+   which replaces the registry's extraction directory,
+   e.g. `/home/username/.cargo/registry/src/index.crates.io-6f17d22d3f0a95d1/foo-0.1.0/src/lib.rs` ->
+   `/cargo/registry/6f17d22d3f0a95d1/foo-0.1.0/src/lib.rs`.
+4. Path to a git dependency will begin with `/cargo/git/<git source id>/<revision>`,
+   which replaces the checkout directory.
+   `<revision>` is a prefix of the resolved commit ID recorded in the lockfile.
+5. Path to a path dependency outside the workspace will be replaced with
+   `/cargo/path/<package name>-<package version>`.
+6. Path into the build directory, for example `OUT_DIR` generated sources,
+   will begin with `/cargo/build-dir`.
+
+`<registry id>` and `<git source id>` are opaque stable hashes of the dependency's source.
+
+Vendored copies of registry or git dependencies
+(via [source replacement](./source-replacement.md))
+are sanitized by their file location instead,
+like workspace paths when inside the workspace directory,
+otherwise like path dependencies.
 
 When a path to the source files of the standard and core library is *not* in scope for sanitization,
 the emitted path will depend on if `rust-src` component is present.
@@ -1563,6 +1585,44 @@ if it isn't, then they will show up as `/rustc/[rustc commit hash]/library/...`
 Paths to all other source files will not be affected.
 
 This will not affect any hard-coded paths in the source code, such as in strings.
+
+##### Unremap files
+
+When the `object` scope is active and debuginfo is enabled,
+Cargo writes an unremap file beside each final artifact.
+The file is aimed at helping debuggers substitute sanitized paths back to local ones,
+e.g., via GDB's `set substitute-path` or LLDB's `target.source-map`.
+
+The unremap file name ends with `.trim-paths.jsonl`.
+For example,
+your `my-app` executable would come with an unremap file named
+`my-app.trim-paths.jsonl` beside it.
+
+The unremap file is in JSONL format:
+
+* The first record carries the format version.
+* The second record is file-level metadata,
+  such as the toolchain version and the workspace root.
+* Each following record maps a sanitized path prefix in the artifact
+  (`from`) back to the local path it replaced (`to`),
+  ordered by the `from` prefix.
+  Note that this follows the debugger substitution direction,
+  which is the inverse of `--remap-path-prefix`.
+
+An example of the unremap file:
+
+```json
+{"v":1}
+{"rust_version":"1.96.0-nightly","workspace_root":"/home/me/app"}
+{"from":"/cargo/build-dir","to":"/home/me/app/target"}
+{"from":"/cargo/registry/6f17d22d3f0a95d1","to":"/home/me/.cargo/registry/src/index.crates.io-6f17d22d3f0a95d1"}
+{"from":"/rustc/abc123","to":"/home/me/.rustup/toolchains/nightly/lib/rustlib/src/rust"}
+```
+
+Since it is meant to be a debugging aid,
+it includes absolute paths of your system,
+so there is no artifact privacy guarantee.
+You might want to exclude `*.trim-paths.jsonl` files when distributing artifacts.
 
 #### Environment variable
 

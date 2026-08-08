@@ -51,8 +51,8 @@ A compatible `pre-release` version can also be specified even when the version
 requirement in `Cargo.toml` doesn't contain any pre-release identifier (nightly only).
 {{/option}}
 
-{{#option "`--breaking` _directory_" }}
-Update _spec_ to latest SemVer-breaking version.
+{{#option "`--breaking`" }}
+Update _spec_ to highest SemVer-breaking version.
 
 Version requirements will be modified to allow this update.
 

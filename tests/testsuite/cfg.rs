@@ -56,7 +56,7 @@ fn dont_include() {
         .build();
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] a v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -96,7 +96,7 @@ fn works_through_the_registry() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] baz v0.1.0 (registry `dummy-registry`)
@@ -147,7 +147,7 @@ fn ignore_version_from_other_platform() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [ADDING] bar v0.1.0 (available: v0.2.0)
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
@@ -347,6 +347,13 @@ fn bad_cfg_discovery() {
                     print!("{}", run_rustc());
                     return;
                 }
+                if mode == "no-sysroot" {
+                    return;
+                }
+                if std::env::args_os().any(|a| a == "--print=sysroot") {
+                    print!("{}", run_rustc());
+                    return;
+                }
                 if mode == "no-crate-types" {
                     return;
                 }
@@ -356,24 +363,19 @@ fn bad_cfg_discovery() {
                 }
                 let output = run_rustc();
                 let mut lines = output.lines();
-                let sysroot = loop {
+                let mut line = loop {
                     let line = lines.next().unwrap();
                     if line.contains("___") {
-                        println!("{}", line);
+                        println!("{line}");
                     } else {
                         break line;
                     }
                 };
-                if mode == "no-sysroot" {
-                    return;
-                }
-                println!("{}", sysroot);
 
                 if mode == "no-split-debuginfo" {
                     return;
                 }
                 loop {
-                    let line = lines.next().unwrap();
                     if line == "___" {
                         println!("\n{line}");
                         break;
@@ -382,6 +384,7 @@ fn bad_cfg_discovery() {
                         // concat them into one line.
                         print!("{line},");
                     }
+                    line = lines.next().unwrap();
                 };
 
                 if mode != "bad-cfg" {
@@ -411,32 +414,22 @@ foo
 
     p.cargo("check")
         .env("RUSTC", &funky_rustc)
-        .env("FUNKY_MODE", "no-crate-types")
+        .env("FUNKY_MODE", "no-sysroot")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] malformed output when learning about crate-type bin information
-command was: `[ROOT]/compiler/target/debug/compiler[..] --crate-name ___ [..]`
-(no output received)
+[ERROR] sysroot path "" does not exist
 
 "#]])
         .run();
 
     p.cargo("check")
         .env("RUSTC", &funky_rustc)
-        .env("FUNKY_MODE", "no-sysroot")
+        .env("FUNKY_MODE", "no-crate-types")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] output of --print=sysroot missing when learning about target-specific information from rustc
-command was: `[ROOT]/compiler/target/debug/compiler[..]--crate-type [..]`
-
---- stdout
-___[EXE]
-lib___.rlib
-[..]___.[..]
-[..]___.[..]
-[..]___.[..]
-[..]___.[..]
-
+[ERROR] malformed output when learning about crate-type bin information
+command was: `[ROOT]/compiler/target/debug/compiler[..] --crate-name ___ [..]`
+(no output received)
 
 "#]])
         .run();
@@ -456,7 +449,6 @@ lib___.rlib
 [..]___.[..]
 [..]___.[..]
 [..]___.[..]
-[..]
 
 
 "#]])
@@ -474,7 +466,6 @@ lib___.rlib
 [..]___.[..]
 [..]___.[..]
 [..]___.[..]
-[..]
 [..],[..]
 ___
 123
@@ -547,7 +538,7 @@ fn cfg_raw_idents() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] b v0.0.1 ([ROOT]/foo/b)
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -642,7 +633,7 @@ fn cfg_keywords() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] b v0.0.1 ([ROOT]/foo/b)
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -679,7 +670,7 @@ fn cfg_booleans() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [CHECKING] b v0.0.1 ([ROOT]/foo/b)
 [CHECKING] a v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -742,7 +733,7 @@ fn cfg_booleans_not() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] b v0.0.1 ([ROOT]/foo/b)
 [CHECKING] a v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -774,7 +765,7 @@ fn cfg_booleans_combinators() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] b v0.0.1 ([ROOT]/foo/b)
 [CHECKING] a v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -812,7 +803,7 @@ fn cfg_booleans_rustflags_no_effect() {
     p.cargo("check")
         .env("RUSTFLAGS", "--cfg r#false")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [CHECKING] b v0.0.1 ([ROOT]/foo/b)
 [CHECKING] a v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s

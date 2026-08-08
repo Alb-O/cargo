@@ -583,7 +583,14 @@ fn normalize_toml(
         normalized_toml.badges = original_toml.badges.clone();
     } else {
         if let Some(field) = original_toml.requires_package().next() {
-            bail!("this virtual manifest specifies a `{field}` section, which is not allowed");
+            let suggestion = if field == "lints" {
+                "\nhelp: a similar field exists: `[workspace.lints]`"
+            } else {
+                ""
+            };
+            bail!(
+                "this virtual manifest specifies a `{field}` section, which is not allowed{suggestion}"
+            );
         }
     }
 
@@ -860,7 +867,7 @@ pub const DEFAULT_README_FILES: [&str; 3] = ["README.md", "README.txt", "README"
 
 /// Checks if a file with any of the default README file names exists in the package root.
 /// If so, returns a `String` representing that name.
-fn default_readme_from_package_root(package_root: &Path) -> Option<String> {
+pub(crate) fn default_readme_from_package_root(package_root: &Path) -> Option<String> {
     for &readme_filename in DEFAULT_README_FILES.iter() {
         if package_root.join(readme_filename).is_file() {
             return Some(readme_filename.to_string());
@@ -2505,15 +2512,6 @@ pub fn validate_profile(
             "dir-name=\"{}\" in profile `{}` is not currently allowed, \
                  directory names are tied to the profile name for custom profiles",
             dir_name,
-            name
-        );
-    }
-
-    // `inherits` validation
-    if matches!(root.inherits.as_deref(), Some("debug")) {
-        bail!(
-            "profile.{}.inherits=\"debug\" should be profile.{}.inherits=\"dev\"",
-            name,
             name
         );
     }

@@ -500,7 +500,7 @@ pub fn resolve_with_previous<'gctx>(
         version_prefs.publish_time(publish_time);
     }
     if ws.resolve_honors_publish_age() {
-        if let Some(policy) = PublishAgePolicy::new(ws.gctx())? {
+        if let Some(policy) = PublishAgePolicy::new(ws.resolve_publish_time(), ws.gctx())? {
             version_prefs.publish_age(policy);
         }
     }
@@ -561,7 +561,7 @@ pub fn resolve_with_previous<'gctx>(
         registry,
         &version_prefs,
         ResolveVersion::with_rust_version(ws.lowest_rust_version()),
-        Some(ws.gctx()),
+        ws.gctx(),
     )?;
 
     let patches = registry.patches().values().flat_map(|v| v.iter());
@@ -936,7 +936,7 @@ fn emit_warnings_of_unused_patches(
         ws.gctx().shell().print_report(&warnings, false)?;
     }
 
-    return Ok(());
+    Ok(())
 }
 
 /// Informs `registry` and `version_pref` that `[patch]` entries are available

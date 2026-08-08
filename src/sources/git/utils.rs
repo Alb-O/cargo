@@ -34,18 +34,6 @@ use std::time::{Duration, Instant};
 /// checkout is ready to go. See [`GitCheckout::reset`] for why we need this.
 const CHECKOUT_READY_LOCK: &str = ".cargo-ok";
 
-/// A short abbreviated OID.
-///
-/// Exists for avoiding extra allocations in [`GitDatabase::to_short_id`].
-pub struct GitShortID(git2::Buf);
-
-impl GitShortID {
-    /// Views the short ID as a `str`.
-    pub fn as_str(&self) -> &str {
-        self.0.as_str().unwrap()
-    }
-}
-
 /// A remote repository. It gets cloned into a local [`GitDatabase`].
 #[derive(PartialEq, Clone, Debug)]
 pub struct GitRemote {
@@ -205,10 +193,26 @@ impl GitDatabase {
         Ok(checkout)
     }
 
-    /// Get a short OID for a `revision`, usually 7 chars or more if ambiguous.
-    pub fn to_short_id(&self, revision: git2::Oid) -> CargoResult<GitShortID> {
-        let obj = self.repo.find_object(revision, None)?;
-        Ok(GitShortID(obj.short_id()?))
+    /// Get a short OID for a `revision`, 7 chars or more if ambiguous.
+    ///
+    /// Like [`git2::Object::short_id`]
+    /// but ignores the user's `core.abbrev` git config.
+    pub fn to_short_id(&self, rev: git2::Oid) -> CargoResult<String> {
+        const MIN_ABBREV_LEN: usize = 7; // this is git/libgit2's default
+        let odb = self.repo.odb()?;
+        let mut len = MIN_ABBREV_LEN;
+        let mut hex = rev.to_string();
+        // quasi- re-implementation of
+        // https://github.com/libgit2/libgit2/blob/26055f5af74ab/src/libgit2/object.c#L523-L573
+        while len < hex.len() {
+            match odb.exists_prefix(rev, len) {
+                Ok(_) => break,
+                Err(err) if err.code() == git2::ErrorCode::Ambiguous => len += 1,
+                Err(err) => return Err(err.into()),
+            }
+        }
+        hex.truncate(len);
+        Ok(hex)
     }
 
     /// Checks if the database contains the object of this `oid`..
@@ -1140,7 +1144,7 @@ fn has_shallow_lock_file(err: &crate::sources::git::fetch::Error) -> bool {
 /// [1]: https://doc.rust-lang.org/nightly/cargo/reference/config.html#netgit-fetch-with-cli
 #[tracing::instrument(skip(repo, gctx))]
 fn fetch_with_cli(
-    repo: &mut git2::Repository,
+    repo: &git2::Repository,
     url: &str,
     refspecs: &[String],
     tags: bool,
@@ -1150,6 +1154,9 @@ fn fetch_with_cli(
     debug!(target: "git-fetch", backend = "git-cli");
 
     let mut cmd = ProcessBuilder::new("git");
+    // Avoid potential for unused work that may also hang (#15775)
+    cmd.arg("-c").arg("core.fsmonitor=false");
+
     cmd.arg("fetch");
     if tags {
         cmd.arg("--tags");
@@ -1577,7 +1584,7 @@ enum FastPathRev {
 /// [^1]: <https://developer.github.com/v3/repos/commits/#get-the-sha-1-of-a-commit-reference>
 #[tracing::instrument(skip(repo, gctx))]
 fn github_fast_path(
-    repo: &mut git2::Repository,
+    repo: &git2::Repository,
     url: &str,
     reference: &GitReference,
     gctx: &GlobalContext,
@@ -1740,14 +1747,14 @@ mod tests {
     #[test]
     fn github_fast_path_full_hash_returns_needs_fetch() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let mut repo = git2::Repository::init_bare(temp_dir.path()).unwrap();
+        let repo = git2::Repository::init_bare(temp_dir.path()).unwrap();
         let full_hash = "c9040898c9183ddbb9402dcbf749ed06d6ea90ad";
         let reference = GitReference::Rev(full_hash.to_string());
         let gctx = GlobalContext::default().unwrap();
         let expected_oid = rev_to_oid(full_hash).unwrap();
 
         let result =
-            github_fast_path(&mut repo, "https://github.com/user/repo", &reference, &gctx).unwrap();
+            github_fast_path(&repo, "https://github.com/user/repo", &reference, &gctx).unwrap();
 
         assert!(matches!(result, FastPathRev::NeedsFetch(oid) if oid == expected_oid));
     }

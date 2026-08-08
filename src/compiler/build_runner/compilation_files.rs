@@ -11,6 +11,7 @@ use tracing::debug;
 
 use super::{BuildContext, BuildRunner, CompileKind, FileFlavor, Layout};
 use crate::compiler::input_variants::{InputSource, InputVariant};
+use crate::compiler::trim_paths;
 use crate::compiler::{CompileMode, CompileTarget, CrateType, FileType, Unit};
 use crate::util::{self, CargoResult, OnceExt, StableHasher};
 use crate::workspace::{Target, TargetKind, Workspace};
@@ -648,6 +649,27 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
                         .collect();
                     outputs.extend(sbom_files.into_iter());
                 }
+
+                // Only generates unremap files for root units.
+                if bcx.roots.contains(unit) && trim_paths::should_emit_unremap_file(unit) {
+                    let unremap_files: Vec<_> = outputs
+                        .iter()
+                        .filter(|o| matches!(o.flavor, FileFlavor::Normal | FileFlavor::Linkable))
+                        .map(|output| OutputFile {
+                            path: trim_paths::append_unremap_suffix(&output.path),
+                            hardlink: output
+                                .hardlink
+                                .as_ref()
+                                .map(trim_paths::append_unremap_suffix),
+                            export_path: output
+                                .export_path
+                                .as_ref()
+                                .map(trim_paths::append_unremap_suffix),
+                            flavor: FileFlavor::Unremap,
+                        })
+                        .collect();
+                    outputs.extend(unremap_files.into_iter());
+                }
                 outputs
             }
         };
@@ -828,7 +850,7 @@ fn compute_metadata(
         // SourceId for stdlib crates is an absolute path inside the sysroot.
         // Pass the sysroot as workspace root so that we hash a relative path.
         // This avoids the metadata hash changing depending on where the user installed rustc.
-        &bcx.target_data.get_info(unit.kind).unwrap().sysroot
+        &bcx.get_sysroot()
     } else {
         bcx.ws.root()
     };
