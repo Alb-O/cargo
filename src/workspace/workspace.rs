@@ -224,6 +224,19 @@ impl<'gctx> Workspace<'gctx> {
     /// root and all member packages. It will then validate the workspace
     /// before returning it, so `Ok` is only returned for valid workspaces.
     pub fn new(manifest_path: &Path, gctx: &'gctx GlobalContext) -> CargoResult<Workspace<'gctx>> {
+        Self::new_with_additional_members(manifest_path, &[], gctx)
+    }
+
+    /// Creates a workspace and attaches additional package manifests.
+    ///
+    /// An additional manifest must already be a workspace member or be accepted
+    /// by an open workspace. Its in-workspace path dependencies attach through
+    /// the normal member discovery path.
+    pub fn new_with_additional_members(
+        manifest_path: &Path,
+        additional_manifests: &[PathBuf],
+        gctx: &'gctx GlobalContext,
+    ) -> CargoResult<Workspace<'gctx>> {
         let mut ws = Workspace::new_default(manifest_path.to_path_buf(), gctx);
 
         if manifest_path.is_relative() {
@@ -238,10 +251,11 @@ impl<'gctx> Workspace<'gctx> {
         ws.target_dir = gctx.target_dir()?;
         ws.build_dir = gctx.build_dir(ws.root_manifest())?;
 
-        ws.custom_metadata = ws
-            .load_workspace_config()?
-            .and_then(|cfg| cfg.custom_metadata);
-        ws.find_members()?;
+        let mut workspace_config = ws.load_workspace_config()?;
+        ws.custom_metadata = workspace_config
+            .as_mut()
+            .and_then(|config| config.custom_metadata.take());
+        ws.find_members(workspace_config, additional_manifests)?;
         ws.set_resolve_behavior()?;
         ws.validate()?;
         Ok(ws)
@@ -871,8 +885,18 @@ impl<'gctx> Workspace<'gctx> {
     /// will transitively follow all `path` dependencies looking for members of
     /// the workspace.
     #[tracing::instrument(skip_all)]
-    fn find_members(&mut self) -> CargoResult<()> {
-        let Some(workspace_config) = self.load_workspace_config()? else {
+    fn find_members(
+        &mut self,
+        workspace_config: Option<WorkspaceRootConfig>,
+        additional_manifests: &[PathBuf],
+    ) -> CargoResult<()> {
+        let Some(workspace_config) = workspace_config else {
+            if !additional_manifests.is_empty() {
+                bail!(
+                    "additional package manifests require a workspace, but `{}` is not in one",
+                    self.current_manifest.display()
+                );
+            }
             debug!("find_members - only me as a member");
             self.members.insert(self.current_manifest.clone());
             self.default_members.push(self.current_manifest.clone());
@@ -918,6 +942,27 @@ impl<'gctx> Workspace<'gctx> {
         if current_is_open_member {
             let current_manifest = self.current_manifest.clone();
             self.find_path_deps(&current_manifest, &root_manifest_path, false)?;
+        }
+
+        for manifest_path in additional_manifests {
+            let manifest_path = paths::normalize_path(manifest_path);
+            if self.members.contains(&manifest_path) {
+                continue;
+            }
+            if !workspace_config.accepts_open_member(&manifest_path) {
+                bail!(
+                    "additional package manifest `{}` is not a member of workspace `{}` and cannot attach through open membership",
+                    manifest_path.display(),
+                    root_manifest_path.display()
+                );
+            }
+            self.find_path_deps(&manifest_path, &root_manifest_path, false)
+                .with_context(|| {
+                    format!(
+                        "failed to load additional package manifest `{}`",
+                        manifest_path.display()
+                    )
+                })?;
         }
 
         if let Some(default) = default_members_paths {

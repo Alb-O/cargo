@@ -140,6 +140,30 @@ For a dynamically attached member, `cargo locate-project --workspace` reports th
 
 The shared lockfile accumulates packages from open members as they are discovered. Resolving one open member updates its graph without removing packages recorded by earlier open-member invocations. Deleting the lockfile resets this discovered state; the next invocation starts it again from the members visible to that command.
 
+### Narrowed lockfiles
+
+A narrowed lockfile records an exact dependency graph for selected open members. It can be tracked for a reproducible package or deployment while the default workspace lockfile continues to accumulate development graphs.
+
+Configure an alternate lockfile path and pass each root manifest in one invocation. Run this example from the workspace root:
+
+```sh
+cargo generate-lockfile --narrow \
+  --manifest-path Cargo.toml \
+  --include-manifest tools/server/Cargo.toml \
+  --include-manifest tools/client/Cargo.toml \
+  --config 'resolver.lockfile-path="tools/Cargo.lock"'
+```
+
+The primary package selected by `--manifest-path` is also a root. A virtual primary manifest only locates the workspace. Each additional manifest must already be a member or be accepted by open membership. Cargo follows path dependencies, omits unrelated members and unused patches, and replaces the alternate lockfile with the resulting graph.
+
+Use the same alternate path with later commands. Cargo recognises the narrowed lockfile marker and rejects an invoked package outside its graph. Use `--locked` when the command must leave the tracked resolution unchanged:
+
+```sh
+cargo check --locked \
+  --manifest-path tools/server/Cargo.toml \
+  --config 'resolver.lockfile-path="tools/Cargo.lock"'
+```
+
 Open membership applies only to packages hierarchically below the workspace root. The nearest enclosing workspace wins, and `exclude` prevents dynamic attachment. Packages outside the workspace root must still be explicitly listed in `members`, even when they use [`package.workspace`] to point to the root.
 
 ### Package selection

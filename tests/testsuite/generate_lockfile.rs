@@ -59,6 +59,167 @@ fn adding_and_removing_packages() {
     assert_eq!(lock1, lock4);
 }
 
+fn path_dep_manifest(package: &str, dependency: &str) -> String {
+    format!(
+        r#"
+            [package]
+            name = "{package}"
+            version = "0.1.0"
+            edition = "2024"
+
+            [dependencies]
+            {dependency} = {{ path = "../{dependency}" }}
+        "#
+    )
+}
+
+#[cargo_test]
+fn narrowed_lockfile_tracks_selected_roots() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["listed"]
+                open-membership = true
+                resolver = "3"
+
+                [patch.crates-io]
+                unused-patch = { path = "unused-patch" }
+            "#,
+        )
+        .file("listed/Cargo.toml", &basic_manifest("listed", "0.1.0"))
+        .file("listed/src/lib.rs", "")
+        .file(
+            "dynamic-a/Cargo.toml",
+            &path_dep_manifest("dynamic-a", "dep-a"),
+        )
+        .file("dynamic-a/src/lib.rs", "pub fn value() { dep_a::value(); }")
+        .file(
+            "dynamic-b/Cargo.toml",
+            &path_dep_manifest("dynamic-b", "dep-b"),
+        )
+        .file("dynamic-b/src/lib.rs", "pub fn value() { dep_b::value(); }")
+        .file("dep-a/Cargo.toml", &basic_manifest("dep-a", "0.1.0"))
+        .file("dep-a/src/lib.rs", "pub fn value() {}")
+        .file("dep-b/Cargo.toml", &basic_manifest("dep-b", "0.1.0"))
+        .file("dep-b/src/lib.rs", "pub fn value() {}")
+        .file("dep-c/Cargo.toml", &basic_manifest("dep-c", "0.1.0"))
+        .file("dep-c/src/lib.rs", "pub fn value() {}")
+        .file(
+            "unused-patch/Cargo.toml",
+            &basic_manifest("unused-patch", "1.0.0"),
+        )
+        .file("unused-patch/src/lib.rs", "")
+        .build();
+
+    let generate = || {
+        p.cargo("generate-lockfile --narrow --manifest-path Cargo.toml")
+            .arg("--include-manifest")
+            .arg("dynamic-a/Cargo.toml")
+            .arg("--include-manifest")
+            .arg("dynamic-b/Cargo.toml")
+            .arg("--config")
+            .arg("resolver.lockfile-path='segment/Cargo.lock'")
+            .run();
+    };
+    generate();
+
+    assert!(!p.root().join("Cargo.lock").exists());
+    let lock = p.read_file("segment/Cargo.lock");
+    assert!(lock.contains("cargo-narrowed-lockfile = \"1\""));
+    for package in ["dynamic-a", "dynamic-b", "dep-a", "dep-b"] {
+        assert!(lock.contains(&format!("name = \"{package}\"")));
+    }
+    for package in ["listed", "unused-patch", "dep-c"] {
+        assert!(!lock.contains(&format!("name = \"{package}\"")));
+    }
+
+    p.change_file(
+        "dynamic-a/Cargo.toml",
+        &path_dep_manifest("dynamic-a", "dep-c"),
+    );
+    p.change_file("dynamic-a/src/lib.rs", "pub fn value() { dep_c::value(); }");
+    generate();
+
+    let lock = p.read_file("segment/Cargo.lock");
+    assert!(!lock.contains("name = \"dep-a\""));
+    assert!(lock.contains("name = \"dep-c\""));
+    assert!(lock.contains("name = \"dynamic-b\""));
+
+    for package in ["dynamic-a", "dynamic-b"] {
+        p.cargo("check --locked")
+            .arg("--manifest-path")
+            .arg(format!("{package}/Cargo.toml"))
+            .arg("--config")
+            .arg("resolver.lockfile-path='segment/Cargo.lock'")
+            .run();
+    }
+
+    p.cargo("check --manifest-path listed/Cargo.toml")
+        .arg("--config")
+        .arg("resolver.lockfile-path='segment/Cargo.lock'")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] package `listed` is outside the graph recorded in narrowed lockfile `[ROOT]/foo/segment/Cargo.lock`
+
+"#]])
+        .run();
+
+    p.change_file(
+        "Cargo.toml",
+        r#"
+            [workspace]
+            members = ["dynamic-a", "dynamic-b"]
+            resolver = "3"
+        "#,
+    );
+    p.cargo("check --workspace --locked")
+        .arg("--config")
+        .arg("resolver.lockfile-path='segment/Cargo.lock'")
+        .run();
+}
+
+#[cargo_test]
+fn narrowed_lockfile_requires_an_alternate_path() {
+    let p = project().file("src/main.rs", "fn main() {}").build();
+
+    p.cargo("generate-lockfile --narrow")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] --narrow requires an alternate lockfile configured with `resolver.lockfile-path`
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn narrowed_lockfile_rejects_an_unattached_manifest() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = []
+            "#,
+        )
+        .file("dynamic/Cargo.toml", &basic_manifest("dynamic", "0.1.0"))
+        .file("dynamic/src/lib.rs", "")
+        .build();
+
+    p.cargo("generate-lockfile --narrow --manifest-path Cargo.toml")
+        .arg("--include-manifest")
+        .arg("dynamic/Cargo.toml")
+        .arg("--config")
+        .arg("resolver.lockfile-path='segment/Cargo.lock'")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] additional package manifest `[ROOT]/foo/dynamic/Cargo.toml` is not a member of workspace `[ROOT]/foo/Cargo.toml` and cannot attach through open membership
+
+"#]])
+        .run();
+}
+
 #[cargo_test]
 fn no_index_update_sparse() {
     let _registry = RegistryBuilder::new().http_index().build();

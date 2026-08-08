@@ -375,6 +375,30 @@ fn resolve_with_registry<'gctx>(
     dry_run: bool,
 ) -> CargoResult<Resolve> {
     let prev = ops::load_pkg_lockfile(ws)?;
+    let narrowed_lockfile = prev
+        .as_ref()
+        .filter(|resolve| {
+            ws.has_open_membership() && ops::lockfile::is_narrowed_lockfile(resolve)
+        });
+    let narrowed_spec = if let Some(previous) = narrowed_lockfile {
+        let package = ws.current().with_context(|| {
+            "a narrowed open-workspace lockfile must be used from a package manifest"
+        })?;
+        let package_id = package.package_id();
+        if !previous.iter().any(|locked| locked == package_id) {
+            anyhow::bail!(
+                "package `{}` is outside the graph recorded in narrowed lockfile `{}`",
+                package.name(),
+                ws.lock_root()
+                    .as_path_unlocked()
+                    .join(ops::lockfile::LOCKFILE_NAME)
+                    .display()
+            );
+        }
+        Some(package_id.to_spec())
+    } else {
+        None
+    };
     let mut resolve = resolve_with_previous(
         registry,
         ws,
@@ -382,9 +406,12 @@ fn resolve_with_registry<'gctx>(
         HasDevUnits::Yes,
         prev.as_ref(),
         None,
-        &[],
+        narrowed_spec.as_slice(),
         true,
     )?;
+    if narrowed_lockfile.is_some() {
+        ops::lockfile::prepare_narrowed_lockfile(&mut resolve);
+    }
 
     let print = if !ws.is_ephemeral() && ws.require_optional_deps() {
         if !dry_run {

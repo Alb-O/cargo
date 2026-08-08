@@ -13,6 +13,23 @@ use cargo_util_schemas::lockfile::{
 };
 
 pub const LOCKFILE_NAME: &str = "Cargo.lock";
+// A narrowed lock selects the invoked member during later open-workspace
+// resolution, keeping unrelated members outside its graph.
+const NARROWED_LOCKFILE_METADATA_KEY: &str = "cargo-narrowed-lockfile";
+
+pub(super) fn prepare_narrowed_lockfile(resolve: &mut Resolve) {
+    resolve.clear_unused_patches();
+    resolve
+        .metadata_mut()
+        .insert(NARROWED_LOCKFILE_METADATA_KEY.to_owned(), "1".to_owned());
+}
+
+pub(super) fn is_narrowed_lockfile(resolve: &Resolve) -> bool {
+    resolve
+        .metadata()
+        .get(NARROWED_LOCKFILE_METADATA_KEY)
+        .is_some_and(|version| version == "1")
+}
 
 #[tracing::instrument(skip_all)]
 pub fn load_pkg_lockfile(ws: &Workspace<'_>) -> CargoResult<Option<Resolve>> {
@@ -46,7 +63,24 @@ pub fn resolve_to_string(ws: &Workspace<'_>, resolve: &Resolve) -> CargoResult<S
 /// Returns `true` if the lockfile changed
 #[tracing::instrument(skip_all)]
 pub fn write_pkg_lockfile(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoResult<bool> {
-    let (orig, mut out, lock_root) = resolve_to_string_orig(ws, resolve, true)?;
+    write_pkg_lockfile_with(ws, resolve, true)
+}
+
+/// Writes only the supplied resolution, including for an open workspace.
+pub(super) fn write_pkg_lockfile_exact(
+    ws: &Workspace<'_>,
+    resolve: &mut Resolve,
+) -> CargoResult<bool> {
+    write_pkg_lockfile_with(ws, resolve, false)
+}
+
+fn write_pkg_lockfile_with(
+    ws: &Workspace<'_>,
+    resolve: &mut Resolve,
+    accumulate_open_members: bool,
+) -> CargoResult<bool> {
+    let (orig, mut out, lock_root) =
+        resolve_to_string_orig(ws, resolve, accumulate_open_members)?;
 
     // If the lock file contents haven't changed so don't rewrite it. This is
     // helpful on read-only filesystems.
@@ -83,7 +117,11 @@ pub fn write_pkg_lockfile(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoRes
 
     if current_version < default_version {
         resolve.set_version(default_version);
-        out = serialize_workspace_resolve(ws, resolve, orig.as_deref())?;
+        out = if accumulate_open_members {
+            serialize_workspace_resolve(ws, resolve, orig.as_deref())?
+        } else {
+            serialize_resolve(resolve, orig.as_deref())
+        };
     } else if current_version > ResolveVersion::max_stable() && !next_lockfile_bump {
         // The next version hasn't yet stabilized.
         anyhow::bail!("lock file version `{current_version:?}` requires `-Znext-lockfile-bump`")

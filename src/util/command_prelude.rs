@@ -630,8 +630,21 @@ pub trait ArgMatchesExt {
 
     #[tracing::instrument(skip_all)]
     fn workspace<'a>(&self, gctx: &'a GlobalContext) -> CargoResult<Workspace<'a>> {
+        self.workspace_with_additional_members(gctx, &[])
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn workspace_with_additional_members<'a>(
+        &self,
+        gctx: &'a GlobalContext,
+        additional_manifests: &[PathBuf],
+    ) -> CargoResult<Workspace<'a>> {
         let root = self.root_manifest(gctx)?;
-        let mut ws = Workspace::new(&root, gctx)?;
+        let mut ws = Workspace::new_with_additional_members(
+            &root,
+            additional_manifests,
+            gctx,
+        )?;
         ws.set_resolve_honors_rust_version(self.honor_rust_version());
         if gctx.cli_unstable().avoid_dev_deps {
             ws.set_require_optional_deps(false);

@@ -394,6 +394,10 @@ unable to verify that `{0}` is the same as when the lockfile was generated
         &self.unused_patches
     }
 
+    pub(crate) fn clear_unused_patches(&mut self) {
+        self.unused_patches.clear();
+    }
+
     pub fn checksums(&self) -> &HashMap<PackageId, Option<String>> {
         &self.checksums
     }
@@ -404,6 +408,10 @@ unable to verify that `{0}` is the same as when the lockfile was generated
 
     pub fn metadata(&self) -> &TomlLockfileMetadata {
         &self.metadata
+    }
+
+    pub(crate) fn metadata_mut(&mut self) -> &mut TomlLockfileMetadata {
+        &mut self.metadata
     }
 
     pub fn extern_crate_name_and_dep_name(

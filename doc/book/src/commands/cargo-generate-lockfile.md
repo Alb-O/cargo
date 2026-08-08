@@ -14,6 +14,8 @@ This command will create the `Cargo.lock` lockfile for the current package or
 workspace. If the lockfile already exists, it will be rebuilt with the latest
 available version of every package.
 
+In an open workspace, `--narrow` creates an exact lockfile for selected package roots and their dependency closure at an alternate `resolver.lockfile-path`. See [Narrowed lockfiles](../reference/workspaces.html#narrowed-lockfiles).
+
 See also [cargo-update(1)](cargo-update.html) which is also capable of creating a `Cargo.lock`
 lockfile and has more options for controlling update behavior.
 
@@ -59,6 +61,16 @@ terminal.</li>
 <dt class="option-term" id="option-cargo-generate-lockfile---manifest-path"><a class="option-anchor" href="#option-cargo-generate-lockfile---manifest-path"><code>--manifest-path</code> <em>path</em></a></dt>
 <dd class="option-desc"><p>Path to the <code>Cargo.toml</code> file. By default, Cargo searches for the
 <code>Cargo.toml</code> file in the current directory or any parent directory.</p>
+</dd>
+
+
+<dt class="option-term" id="option-cargo-generate-lockfile---narrow"><a class="option-anchor" href="#option-cargo-generate-lockfile---narrow"><code>--narrow</code></a></dt>
+<dd class="option-desc"><p>Generate an exact lockfile for the selected package roots and their dependency closure in an open workspace. This option requires an alternate lockfile configured with <code>resolver.lockfile-path</code>. The primary package selected by <code>--manifest-path</code> becomes a root. If that manifest is a virtual workspace, specify roots with <code>--include-manifest</code>.</p>
+</dd>
+
+
+<dt class="option-term" id="option-cargo-generate-lockfile---include-manifest"><a class="option-anchor" href="#option-cargo-generate-lockfile---include-manifest"><code>--include-manifest</code> <em>path</em></a></dt>
+<dd class="option-desc"><p>Add a package manifest as a narrowed lockfile root. This option requires <code>--narrow</code> and can be specified more than once. A package must already belong to the workspace or be accepted by open membership.</p>
 </dd>
 
 

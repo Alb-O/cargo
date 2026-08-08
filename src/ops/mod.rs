@@ -31,6 +31,7 @@ pub use self::cargo_test::{TestOptions, run_benches, run_tests};
 pub use self::cargo_uninstall::uninstall;
 pub use self::cargo_update::UpdateOptions;
 pub use self::cargo_update::generate_lockfile;
+pub use self::cargo_update::generate_narrowed_lockfile;
 pub use self::cargo_update::print_lockfile_changes;
 pub use self::cargo_update::update_lockfile;
 pub use self::cargo_update::upgrade_manifests;

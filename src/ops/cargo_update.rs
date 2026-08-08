@@ -40,20 +40,50 @@ pub struct UpdateOptions<'a> {
 }
 
 pub fn generate_lockfile(ws: &Workspace<'_>) -> CargoResult<()> {
+    generate_lockfile_for(ws, None)
+}
+
+/// Generates an exact lockfile for selected workspace package roots.
+pub fn generate_narrowed_lockfile(
+    ws: &Workspace<'_>,
+    specs: &[PackageIdSpec],
+) -> CargoResult<()> {
+    if ws.requested_lockfile_path().is_none() {
+        anyhow::bail!(
+            "--narrow requires an alternate lockfile configured with `resolver.lockfile-path`"
+        );
+    }
+    if !ws.has_open_membership() {
+        anyhow::bail!("--narrow requires a workspace with `open-membership = true`");
+    }
+    if specs.is_empty() {
+        anyhow::bail!("a narrowed lockfile requires at least one package root")
+    }
+    generate_lockfile_for(ws, Some(specs))
+}
+
+fn generate_lockfile_for(
+    ws: &Workspace<'_>,
+    narrowed_specs: Option<&[PackageIdSpec]>,
+) -> CargoResult<()> {
     let mut registry = ws.package_registry()?;
-    let previous_resolve = None;
     let mut resolve = ops::resolve_with_previous(
         &mut registry,
         ws,
         &CliFeatures::new_all(true),
         HasDevUnits::Yes,
-        previous_resolve,
         None,
-        &[],
+        None,
+        narrowed_specs.unwrap_or_default(),
         true,
     )?;
-    ops::write_pkg_lockfile(ws, &mut resolve)?;
-    print_lockfile_changes(ws, previous_resolve, &resolve, &mut registry)?;
+    if narrowed_specs.is_some() {
+        ops::lockfile::prepare_narrowed_lockfile(&mut resolve);
+        ops::lockfile::write_pkg_lockfile_exact(ws, &mut resolve)?;
+    } else {
+        ops::write_pkg_lockfile(ws, &mut resolve)?;
+    }
+    print_lockfile_changes(ws, None, &resolve, &mut registry)?;
     Ok(())
 }
 
