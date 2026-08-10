@@ -1155,7 +1155,7 @@ See the [resolver](resolver.md#rust-version) chapter for more details.
 
 ### `build.primary-codegen-backend` (fork extension)
 
-The `build.primary-codegen-backend` setting selects a codegen backend for primary packages compiled for the native target. Explicit profile settings take precedence, and LTO-enabled profiles, tests, and Clippy retain their normal backend.
+The `build.primary-codegen-backend` setting selects a codegen backend for primary packages compiled for the native target during build and non-test check operations. Explicit profile settings take precedence, and LTO-enabled profiles, benchmarks, tests, documentation builds, and Clippy retain their normal backend.
 
 ```toml
 [build]

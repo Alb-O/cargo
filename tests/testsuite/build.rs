@@ -6352,6 +6352,88 @@ fn primary_codegen_backend_only_applies_to_primary_native_units() {
 }
 
 #[cargo_test]
+fn primary_codegen_backend_applies_to_non_test_checks() {
+    let p = project()
+        .file("src/lib.rs", "pub fn value() -> u32 { 42 }")
+        .build();
+
+    p.cargo(r#"check -v --config 'build.primary-codegen-backend="llvm"'"#)
+        .with_stderr_contains("[RUNNING] `rustc --crate-name foo [..]-Z codegen-backend=llvm[..]")
+        .run();
+}
+
+#[cargo_test]
+fn primary_codegen_backend_skips_benchmark_support_units() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+
+                [lib]
+                bench = false
+
+                [[bench]]
+                name = "measure"
+                harness = false
+            "#,
+        )
+        .file("src/lib.rs", "pub fn value() -> u32 { 42 }")
+        .file("benches/measure.rs", "fn main() { assert_eq!(foo::value(), 42); }")
+        .build();
+
+    p.cargo(
+        r#"bench -v --no-run --bench measure --config 'build.primary-codegen-backend="llvm"'"#,
+    )
+    .with_stderr_line_without(
+        &["[RUNNING] `rustc --crate-name foo", "--crate-type lib"],
+        &["codegen-backend"],
+    )
+    .with_stderr_line_without(
+        &["[RUNNING] `rustc --crate-name measure"],
+        &["codegen-backend"],
+    )
+    .run();
+}
+
+#[cargo_test]
+fn primary_codegen_backend_skips_test_support_units() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+
+                [lib]
+                test = false
+                doctest = false
+            "#,
+        )
+        .file("src/lib.rs", "pub fn value() -> u32 { 42 }")
+        .file("tests/integration.rs", "#[test] fn value() { assert_eq!(foo::value(), 42); }")
+        .build();
+
+    p.cargo(
+        r#"test -v --no-run --test integration --config 'build.primary-codegen-backend="llvm"'"#,
+    )
+    .with_stderr_line_without(
+        &["[RUNNING] `rustc --crate-name foo", "--crate-type lib"],
+        &["codegen-backend"],
+    )
+    .with_stderr_line_without(
+        &["[RUNNING] `rustc --crate-name integration", "--test"],
+        &["codegen-backend"],
+    )
+    .run();
+}
+
+#[cargo_test]
 fn primary_codegen_backend_is_part_of_artifact_identity() {
     let p = project()
         .file(

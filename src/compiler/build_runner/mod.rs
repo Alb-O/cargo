@@ -675,10 +675,15 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
             CompileKind::Target(target) => target.rustc_target() == self.bcx.host_triple(),
         };
         let lto_enabled = !matches!(unit.profile.lto, ProfileLto::Bool(false) | ProfileLto::Off);
+        let backend_eligible_intent = matches!(
+            self.bcx.build_config.intent,
+            UserIntent::Build | UserIntent::Check { test: false }
+        );
         let backend_eligible_mode =
             matches!(unit.mode, CompileMode::Build | CompileMode::Check { test: false });
         if unit.profile.codegen_backend.is_some()
             || !self.is_primary_package(unit)
+            || !backend_eligible_intent
             || !backend_eligible_mode
             || !native_target
             || lto_enabled
