@@ -1565,7 +1565,7 @@ If `trim-paths` is not `none` or `false`, then the following paths are sanitized
    which replaces the checkout directory.
    `<revision>` is a prefix of the resolved commit ID recorded in the lockfile.
 5. Path to a path dependency outside the workspace will be replaced with
-   `/cargo/path/<package name>-<package version>`.
+   `/cargo/deps/<package name>-<package version>`.
 6. Path into the build directory, for example `OUT_DIR` generated sources,
    will begin with `/cargo/build-dir`.
 
@@ -1585,6 +1585,10 @@ if it isn't, then they will show up as `/rustc/[rustc commit hash]/library/...`
 Paths to all other source files will not be affected.
 
 This will not affect any hard-coded paths in the source code, such as in strings.
+
+The exact remap path prefixes are not stable across Cargo versions.
+Tools that map paths embedded in artifacts back to local sources
+should consume unremap files instead of interpreting these prefixes.
 
 ##### Unremap files
 
@@ -1614,6 +1618,7 @@ An example of the unremap file:
 ```json
 {"v":1}
 {"rust_version":"1.96.0-nightly","workspace_root":"/home/me/app"}
+{"from":".","to":"/home/me/app"}
 {"from":"/cargo/build-dir","to":"/home/me/app/target"}
 {"from":"/cargo/registry/6f17d22d3f0a95d1","to":"/home/me/.cargo/registry/src/index.crates.io-6f17d22d3f0a95d1"}
 {"from":"/rustc/abc123","to":"/home/me/.rustup/toolchains/nightly/lib/rustlib/src/rust"}
