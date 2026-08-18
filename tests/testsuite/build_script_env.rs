@@ -222,7 +222,7 @@ fn build_script_env_verbose() {
         .with_stderr_data(
             "\
 ...
-[RUNNING] `[..]CARGO=[..]build-script-build`
+[RUNNING] `[..]CARGO=[..]build_script_build`
 ...",
         )
         .run();

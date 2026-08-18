@@ -99,8 +99,17 @@ pub fn clean(ws: &Workspace<'_>, opts: &CleanOptions<'_>) -> CargoResult<()> {
             bail!("--doc cannot be used with -p");
         }
         // If the doc option is set, we just want to delete the doc directory.
-        target_dir = target_dir.join("doc");
-        clean_ctx.remove_paths(&[target_dir.into_path_unlocked()])?;
+        let doc_dirs = CompileKind::from_requested_targets(gctx, &opts.targets)?
+            .into_iter()
+            .map(|kind| {
+                let target_dir = match kind {
+                    CompileKind::Host => target_dir.clone(),
+                    CompileKind::Target(target) => target_dir.join(target.short_name()),
+                };
+                target_dir.join("doc").into_path_unlocked()
+            })
+            .collect::<Vec<_>>();
+        clean_ctx.remove_paths(&doc_dirs)?;
     } else {
         let profiles = Profiles::new(&ws, opts.requested_profile)?;
 
@@ -292,7 +301,7 @@ fn clean_specs(
                         let triple = target_data.short_name(compile_kind);
                         let (file_types, _unsupported) = target_data
                             .info(*compile_kind)
-                            .rustc_outputs(mode, target.kind(), triple, clean_ctx.gctx)?;
+                            .rustc_outputs(mode, target.kind(), triple)?;
                         let artifact_dir = layout
                             .artifact_dir()
                             .expect("artifact-dir was not locked during clean");
@@ -313,6 +322,11 @@ fn clean_specs(
                                     .with_extension("d")
                                     .to_string_lossy()
                                     .into_owned();
+
+                                let uplifted_path = uplift_dir.join(&uplifted_filename);
+                                // Unremap file emitted for `-Ztrim-paths`.
+                                let unremap = trim_paths::append_unremap_suffix(&uplifted_path);
+                                clean_ctx.rm_rf(&unremap)?;
 
                                 dirs_to_clean.mark_utf(uplift_dir, |filename| {
                                     filename == uplifted_filename || filename == dep_info
@@ -373,7 +387,7 @@ fn clean_specs(
                         let triple = target_data.short_name(compile_kind);
                         let (file_types, _unsupported) = target_data
                             .info(*compile_kind)
-                            .rustc_outputs(mode, target.kind(), triple, clean_ctx.gctx)?;
+                            .rustc_outputs(mode, target.kind(), triple)?;
                         let artifact_dir = layout
                             .artifact_dir()
                             .expect("artifact-dir was not locked during clean");

@@ -77,13 +77,11 @@ Each new feature described below should explain how to use it.
     * [msrv-policy](#msrv-policy) --- MSRV-aware resolver and version selection
     * [precise-pre-release](#precise-pre-release) --- Allows pre-release versions to be selected with `update --precise`
     * [sbom](#sbom) --- Generates SBOM pre-cursor files for compiled artifacts
-    * [update-breaking](#update-breaking) --- Allows upgrading to breaking versions with `update --breaking`
     * [feature-unification](#feature-unification) --- Enable new feature unification modes in workspaces
     * [lockfile-publish-time](#lockfile-publish-time) --- Limit resolver to packages older than the specified time
     * [min-publish-age](#min-publish-age) --- Filters out dependency versions published more recently than a configured minimum age.
 * Output behavior
     * [artifact-dir](#artifact-dir) --- Adds a directory where artifacts are copied to.
-    * [build-dir-new-layout](#build-dir-new-layout) --- Enables the new build-dir filesystem layout
     * [Different binary name](#different-binary-name) --- Assign a name to the built binary that is separate from the crate name.
     * [root-dir](#root-dir) --- Controls the root directory relative to which paths are printed
 * Compile behavior
@@ -123,7 +121,7 @@ Each new feature described below should explain how to use it.
     * [unit-graph](#unit-graph) --- Emits JSON for Cargo's internal graph structure.
     * [`cargo rustc --print`](#rustc---print) --- Calls rustc with `--print` to display information from rustc.
     * [Build analysis](#build-analysis) --- Record and persist detailed build metrics across runs, with new commands to query past builds.
-    * [`rustc-unicode`](#rustc-unicode) --- Enables `rustc`'s unicode error format in Cargo's error messages 
+    * [`rustc-unicode`](#rustc-unicode) --- Enables `rustc`'s unicode error format in Cargo's error messages
 * Configuration
     * [`cargo config`](#cargo-config) --- Adds a new subcommand for viewing config files.
 * Registries
@@ -311,7 +309,7 @@ version = "0.0.1"
 build = ["foo.rs", "bar.rs"]
 ```
 
-**Accessing Output Directories**:  Output directory of each build script can be accessed by using `<script-name>_OUT_DIR` 
+**Accessing Output Directories**:  Output directory of each build script can be accessed by using `<script-name>_OUT_DIR`
   where the `<script-name>` is the file-stem of the build script, exactly as-is.
   For example, `bar_OUT_DIR` for script at `foo/bar.rs`. (Only set during compilation, can be accessed via `env!` macro)
 
@@ -466,7 +464,7 @@ that are uplifted into the target or artifact directories.
         {
           // Index in to the crates array.
           "index": 1,
-          // Dependency kind: 
+          // Dependency kind:
           // Normal: A dependency linked to the artifact produced by this crate.
           // Build: A compile-time dependency used to build this crate (build-script or proc-macro).
           "kind": "normal"
@@ -502,30 +500,6 @@ that are uplifted into the target or artifact directories.
   }
 }
 ```
-
-## update-breaking
-
-* Tracking Issue: [#12425](https://github.com/rust-lang/cargo/issues/12425)
-
-Allow upgrading dependencies version requirements in `Cargo.toml` across SemVer
-incompatible versions using with the `--breaking` flag.
-
-This only applies to dependencies when
-- The package is a dependency of a workspace member
-- The dependency is not renamed
-- A SemVer-incompatible version is available
-- The "SemVer operator" is used (`^` which is the default)
-
-Users may further restrict which packages get upgraded by specifying them on
-the command line.
-
-Example:
-```console
-$ cargo +nightly -Zunstable-options update --breaking
-$ cargo +nightly -Zunstable-options update --breaking clap
-```
-
-*This is meant to fill a similar role as [cargo-upgrade](https://github.com/killercup/cargo-edit/)*
 
 ## build-std
 * Tracking Repository: <https://github.com/rust-lang/wg-cargo-std-aware>
@@ -1760,8 +1734,6 @@ panic = "immediate-abort"
 
 Use fine grain locking instead of locking the entire build cache.
 
-Note: Fine grain locking implicitly enables [build-dir-new-layout](#build-dir-new-layout) as fine grain locking builds on that directory reoganization.
-
 ## `[lints.cargo]`
 
 * Tracking Issue: [#12235](https://github.com/rust-lang/cargo/issues/12235)
@@ -1868,7 +1840,7 @@ When in doubt, you can discuss this in [#14520](https://github.com/rust-lang/car
 
 - zsh:
   Add `source <(CARGO_COMPLETE=zsh cargo +nightly)` to your `.zshrc`.
-  
+
 - fish:
   Add `source (CARGO_COMPLETE=fish cargo +nightly | psub)` to `$XDG_CONFIG_HOME/fish/completions/cargo.fish`
 
@@ -1998,7 +1970,7 @@ The `-Zbuild-analysis` feature records and persists detailed build metrics on di
 with new commands to query past builds.
 
 When enabled,
-Cargo writes build logs in JSONL format to the `$CARGO_HOME/log/` directory 
+Cargo writes build logs in JSONL format to the `$CARGO_HOME/log/` directory
 Each cargo invocation produces a log file named with a unique session ID.
 These logs contain timing information, rebuild reasons, and other build metadata
 that can be analyzed with the `cargo report` subcommands.
@@ -2029,14 +2001,6 @@ The following commands are available under `-Zbuild-analysis`:
   similar to `cargo build --timings` but without rebuilding.
 - `cargo report rebuilds` --- Reports why crates were rebuilt,
   helping diagnose unexpected recompilations.
-
-## build-dir-new-layout
-
-* Tracking Issue: [#15010](https://github.com/rust-lang/cargo/issues/15010)
-
-Enables the new build-dir filesystem layout.
-This layout change unblocks work towards caching and locking improvements.
-
 
 ## compile-time-deps
 
@@ -2123,8 +2087,7 @@ incompatible-publish-age = "deny" # Specifies how resolver reacts to these
 min-publish-age = "..."  # Override `registry.global-min-publish-age` for this registry
 
 [registry]
-min-publish-age = "..."  # Override `registry.global-min-publish-age` for crates.io
-global-min-publish-age = "0"  # Minimum time span allowed for packages from this registry
+global-min-publish-age = "0"  # Minimum time span allowed for registry packages by default
 ```
 
 #### `resolver.incompatible-publish-age`
@@ -2135,7 +2098,7 @@ global-min-publish-age = "0"  # Minimum time span allowed for packages from this
 
 When resolving the version of a dependency,
 specify the behavior for versions with a `pubtime` (if present)
-that is incompatible with `registry.min-publish-age`.
+that is incompatible with the configured `min-publish-age`.
 Values include:
 
 - `allow`: treat pubtime-incompatible versions like any other version
@@ -2157,23 +2120,6 @@ It supports the following values:
 
 - An integer followed by "seconds", "minutes", "hours", "days", "weeks", or "months"
 - `"0"` to allow all packages
-
-#### `registry.min-publish-age`
-
-* Type: String
-* Default: none
-* Environment: `CARGO_REGISTRY_MIN_PUBLISH_AGE`
-
-Specifies the minimum timespan since a version's `pubtime` that it may be
-considered for `resolver.incompatible-publish-age` for packages from crates.io.
-If not set, `registry.global-min-publish-age` will be used.
-
-It supports the following values:
-
-- An integer followed by "seconds", "minutes", "hours", "days", "weeks", or "months"
-- `"0"` to allow all packages
-
-Generally, `"0"`, `"N days"`, and `"N weeks"` will be used.
 
 #### `registry.global-min-publish-age`
 
@@ -2503,3 +2449,12 @@ Support for `resolver.lockfile-path` config field has been stabilized in Rust 1.
 ## warnings
 
 The `build.warnings` config field has been stabilized in Rust 1.97.
+
+## update-breaking
+
+The `cargo update -Zunstable-options --breaking` flag has been removed in 1.99-nightly.
+See <https://github.com/rust-lang/cargo/pull/17333> fopr the reason for its removal.
+
+## build-dir-new-layout
+
+The new build-dir filesystem layout was stabilized in the 1.100.0 release.

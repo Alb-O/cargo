@@ -34,8 +34,6 @@ pub use self::cargo_update::generate_lockfile;
 pub use self::cargo_update::generate_narrowed_lockfile;
 pub use self::cargo_update::print_lockfile_changes;
 pub use self::cargo_update::update_lockfile;
-pub use self::cargo_update::upgrade_manifests;
-pub use self::cargo_update::write_manifest_upgrades;
 pub use self::cargo_vendor::{VendorOptions, vendor};
 pub use self::common_for_install_and_uninstall::{InstallTracker, resolve_root};
 pub use self::lockfile::{load_pkg_lockfile, resolve_to_string, write_pkg_lockfile};
