@@ -221,20 +221,11 @@ fn clean_variants(gctx: &GlobalContext, args: &ArgMatches) -> CliResult {
     let max_size = args.get_one::<u64>("max-size").copied();
     let build_root = cargo::util::Filesystem::new(build_dir.clone());
     let target_root = cargo::util::Filesystem::new(target_dir.clone());
-    let _build_lock = build_root.open_rw_exclusive_create(
-        ".cargo-input-variants-lock",
+    let _variant_cache_lock = cargo::compiler::input_variants::CacheLockGuard::exclusive(
+        &build_root,
+        &target_root,
         gctx,
-        "retained input variants",
     )?;
-    let _target_lock = if target_root == build_root {
-        None
-    } else {
-        Some(target_root.open_rw_exclusive_create(
-            ".cargo-input-variants-lock",
-            gctx,
-            "retained input variants",
-        )?)
-    };
     let report = cargo::compiler::input_variants::outputs::clean(
         &build_dir,
         &target_dir,

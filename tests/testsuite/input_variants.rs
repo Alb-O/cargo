@@ -223,6 +223,90 @@ fn reuses_observed_environment_branches_and_common_dependencies() {
 }
 
 #[cargo_test]
+fn variant_clean_owns_complete_v2_build_units() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "unit-owner"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file(
+            "build.rs",
+            r#"
+                fn main() {
+                    println!("cargo::rerun-if-env-changed=BRANCH");
+                    let branch = std::env::var("BRANCH").unwrap();
+                    println!("cargo::rustc-env=BRANCH={branch}");
+                    std::fs::write(
+                        std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap())
+                            .join("branch"),
+                        branch,
+                    )
+                    .unwrap();
+                }
+            "#,
+        )
+        .file("src/main.rs", "fn main() { println!(\"{}\", env!(\"BRANCH\")); }")
+        .build();
+
+    for branch in ["lean", "graphics"] {
+        p.cargo("build").env("BRANCH", branch).run();
+    }
+
+    let records = p
+        .root()
+        .join("target/.input-variants/v1/outputs/unit-owner");
+    let mut unit_dirs = Vec::new();
+    let mut sidecars = Vec::new();
+    for entry in fs::read_dir(&records).unwrap() {
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+        let Some(unit_dir) = record.get("unit_dir").and_then(|path| path.as_str()) else {
+            continue;
+        };
+        unit_dirs.push(std::path::PathBuf::from(unit_dir));
+        sidecars.extend(
+            record["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|path| std::path::PathBuf::from(path.as_str().unwrap())),
+        );
+    }
+    unit_dirs.sort();
+    unit_dirs.dedup();
+    sidecars.sort();
+    sidecars.dedup();
+    assert!(!unit_dirs.is_empty());
+    assert!(
+        unit_dirs
+            .iter()
+            .any(|unit_dir| unit_dir.join("run/stdout").exists()),
+        "no retained build-script execution unit was recorded"
+    );
+    for unit_dir in &unit_dirs {
+        fs::write(unit_dir.join("untracked-auxiliary"), "owned by the unit").unwrap();
+    }
+
+    let target = p.root().join("target");
+    p.cargo("clean variants")
+        .arg("--max-age")
+        .arg("0 seconds")
+        .arg("--build-dir")
+        .arg(&target)
+        .arg("--target-dir")
+        .arg(&target)
+        .run();
+
+    assert!(unit_dirs.iter().all(|unit_dir| !unit_dir.exists()));
+    assert!(sidecars.iter().all(|sidecar| !sidecar.exists()));
+}
+
+#[cargo_test]
 fn reuses_rustc_environment_branches() {
     let p = project()
         .file(

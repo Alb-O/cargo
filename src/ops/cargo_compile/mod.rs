@@ -187,20 +187,11 @@ fn compile_ws<'a>(
             anyhow::bail!("fine-grained build locking is not supported on NFS build directories");
         }
     }
-    let _build_variant_lock = build_root.open_ro_shared_create(
-        ".cargo-input-variants-lock",
+    let _variant_cache_lock = crate::compiler::input_variants::CacheLockGuard::shared(
+        &build_root,
+        &target_root,
         ws.gctx(),
-        "retained input variants",
     )?;
-    let _target_variant_lock = if target_root == build_root {
-        None
-    } else {
-        Some(target_root.open_ro_shared_create(
-            ".cargo-input-variants-lock",
-            ws.gctx(),
-            "retained input variants",
-        )?)
-    };
     let interner = UnitInterner::new();
     let logger = BuildLogger::maybe_new(ws, &options.build_config)?;
 

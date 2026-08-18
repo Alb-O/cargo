@@ -31,12 +31,13 @@
 //!     package/
 //! ```
 //!
-//! ## `build-dir` layout
+//! ## Legacy `build-dir` layout
 //!
 //! `build-dir` is where intermediate build artifacts are stored.
 //! The `build-dir` layout is considered an internal implementation detail of Cargo
 //! meaning that we can change this if needed. However, in reality many tools rely on
 //! implementation details of Cargo so breaking changes need to be done carefully.
+//! Cargo releases before 1.100 used the following layout.
 //!
 //! ```text
 //! <build-dir>/
@@ -125,10 +126,9 @@
 //!     .metabuild/
 //! ```
 //!
-//! ### New `build-dir` layout
+//! ## Build-unit `build-dir` layout
 //!
-//! `build-dir` supports a new "build unit" based layout that is unstable.
-//! It can be enabled via `-Zbuild-dir-new-layout`.
+//! Cargo 1.100 and later group intermediate artifacts by build unit.
 //! For more info about the layout transition see: [#15010](https://github.com/rust-lang/cargo/issues/15010)
 //!
 //! ```text

@@ -193,6 +193,13 @@ fn clean_specs(
     dry_run: bool,
 ) -> CargoResult<()> {
     // Clean specific packages.
+    let build_root = ws.build_dir();
+    let target_root = ws.target_dir();
+    let _variant_cache_lock = crate::compiler::input_variants::CacheLockGuard::exclusive(
+        &build_root,
+        &target_root,
+        clean_ctx.gctx,
+    )?;
     let requested_kinds = CompileKind::from_requested_targets(clean_ctx.gctx, targets)?;
     let target_data = RustcTargetData::new(ws, &requested_kinds)?;
     let (pkg_set, resolve) = ops::resolve_ws(ws, dry_run)?;

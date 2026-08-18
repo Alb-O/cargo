@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::util::data_structures::HashMap;
 use crate::util::flock;
-use crate::util::{CargoResult, GlobalContext, StableHasher};
+use crate::util::{CargoResult, FileLock, Filesystem, GlobalContext, StableHasher};
 
 use super::UnitHash;
 
@@ -27,6 +27,76 @@ mod tests;
 const FORMAT_VERSION: u32 = 4;
 const CARGO_MANIFEST_DIR_ENV: &str = "CARGO_MANIFEST_DIR";
 const CARGO_MANIFEST_PATH_ENV: &str = "CARGO_MANIFEST_PATH";
+const CACHE_LOCK_FILE: &str = ".cargo-input-variants-lock";
+const CACHE_LOCK_DESCRIPTION: &str = "retained input variants";
+
+/// Holds the build and target roots stable while retained variant state is in use.
+///
+/// Acquire this guard before profile or build-unit locks so compilation and cleanup use one lock
+/// order.
+pub struct CacheLockGuard {
+    _build: FileLock,
+    _target: Option<FileLock>,
+}
+
+impl CacheLockGuard {
+    pub fn shared(
+        build_root: &Filesystem,
+        target_root: &Filesystem,
+        gctx: &GlobalContext,
+    ) -> CargoResult<Self> {
+        Self::acquire(build_root, target_root, gctx, CacheLockMode::Shared)
+    }
+
+    pub fn exclusive(
+        build_root: &Filesystem,
+        target_root: &Filesystem,
+        gctx: &GlobalContext,
+    ) -> CargoResult<Self> {
+        Self::acquire(build_root, target_root, gctx, CacheLockMode::Exclusive)
+    }
+
+    fn acquire(
+        build_root: &Filesystem,
+        target_root: &Filesystem,
+        gctx: &GlobalContext,
+        mode: CacheLockMode,
+    ) -> CargoResult<Self> {
+        let build = mode.acquire(build_root, gctx)?;
+        let target = if target_root == build_root {
+            None
+        } else {
+            Some(mode.acquire(target_root, gctx)?)
+        };
+        Ok(Self {
+            _build: build,
+            _target: target,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CacheLockMode {
+    Shared,
+    Exclusive,
+}
+
+impl CacheLockMode {
+    fn acquire(self, root: &Filesystem, gctx: &GlobalContext) -> CargoResult<FileLock> {
+        match self {
+            Self::Shared => root.open_ro_shared_create(
+                CACHE_LOCK_FILE,
+                gctx,
+                CACHE_LOCK_DESCRIPTION,
+            ),
+            Self::Exclusive => root.open_rw_exclusive_create(
+                CACHE_LOCK_FILE,
+                gctx,
+                CACHE_LOCK_DESCRIPTION,
+            ),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]

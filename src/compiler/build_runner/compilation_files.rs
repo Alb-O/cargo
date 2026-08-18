@@ -320,6 +320,20 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
         self.layout(unit.kind).build_dir().fingerprint(&dir)
     }
 
+    /// Returns the v2 build directory owned only by this unit identity.
+    ///
+    /// Documentation modes and the legacy layout can share physical directories across metadata
+    /// identities, so callers cannot use those directories as ownership boundaries.
+    pub fn dedicated_unit_dir(&self, unit: &Unit) -> Option<PathBuf> {
+        if !self.ws.gctx().cli_unstable().build_dir_new_layout
+            || self.metadata(unit).pkg_dir().is_none()
+        {
+            return None;
+        }
+        let dir = self.pkg_dir(unit);
+        Some(self.layout(unit.kind).build_dir().build_unit(&dir))
+    }
+
     /// The lock location for a given build unit.
     pub fn build_unit_lock(&self, unit: &Unit) -> PathBuf {
         let dir = self.pkg_dir(unit);

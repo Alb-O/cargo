@@ -635,15 +635,16 @@ pub fn prepare_target(
         owned.push(dep_info_loc(build_runner, unit));
         owned.push(build_runner.files().incremental_dir(unit));
         if unit.mode.is_run_custom_build() {
-            owned.push(build_runner.files().build_script_out_dir(unit));
+            owned.push(build_runner.files().build_script_run_dir(unit));
         }
-        Some((
-            build_root,
-            target_root,
-            unit.pkg.name().to_string(),
+        Some(super::input_variants::outputs::OutputOwnership::new(
+            &build_root,
+            &target_root,
+            unit.pkg.name().as_str(),
             metadata.unit_id(),
+            build_runner.files().dedicated_unit_dir(unit),
             owned,
-        ))
+        )?)
     } else {
         None
     };
@@ -679,14 +680,10 @@ pub fn prepare_target(
         });
     }
 
-    let fresh_variant = variant_outputs
-        .as_ref()
-        .map(|(build_root, _, package, unit_id, _)| {
-            (build_root.clone(), package.clone(), *unit_id)
-        });
+    let fresh_variant = variant_outputs.clone();
     let fresh = Work::new(move |_| {
-        if let Some((build_root, package, unit_id)) = fresh_variant {
-            super::input_variants::outputs::touch(&build_root, &package, unit_id)?;
+        if let Some(outputs) = fresh_variant {
+            outputs.mark_used()?;
         }
         Ok(())
     });
@@ -744,28 +741,16 @@ pub fn prepare_target(
             }
 
             write_fingerprint(&write_loc, &write_fingerprint_value)?;
-            if let Some((build_root, target_root, package, unit_id, owned)) = variant_outputs {
-                super::input_variants::outputs::record(
-                    &build_root,
-                    &package,
-                    unit_id,
-                    owned,
-                    &[&build_root, &target_root],
-                )?;
+            if let Some(outputs) = variant_outputs {
+                outputs.record_build()?;
             }
             Ok(())
         })
     } else {
         Work::new(move |_| {
             write_fingerprint(&write_loc, &write_fingerprint_value)?;
-            if let Some((build_root, target_root, package, unit_id, owned)) = variant_outputs {
-                super::input_variants::outputs::record(
-                    &build_root,
-                    &package,
-                    unit_id,
-                    owned,
-                    &[&build_root, &target_root],
-                )?;
+            if let Some(outputs) = variant_outputs {
+                outputs.record_build()?;
             }
             Ok(())
         })
